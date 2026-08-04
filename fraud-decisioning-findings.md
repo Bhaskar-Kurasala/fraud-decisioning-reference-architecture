@@ -36,28 +36,28 @@ third action is ~68% of it. Same model, same score, same AUC throughout.
 
 > **Corrected 2026-08-05.** This section previously claimed $6.6M/yr "at
 > identical AUC", derived from an analytic prior shift rather than a fitted
-> model. The refit has since been run. The penalty is **$4.37M/yr** and the AUC
+> model. The refit has since been run. The penalty is **$4.36M/yr** and the AUC
 > is *not* identical. Full derivation:
 > [`docs/findings/fit-balanced-empirical-result.md`](docs/findings/fit-balanced-empirical-result.md).
 > The original row is retained below, marked, because the gap between the two is
 > itself the lesson.
 
 Four scorings of the same model on the same test set, routed through the same
-policy:
+four-action policy:
 
 | Score | AUC | PR-AUC | ECE | Annual cost | Penalty | Allow | Challenge | Deny |
 |---|---|---|---|---|---|---|---|---|
-| Calibrated (isotonic) | 0.9045 | 0.5271 | 0.0035 | $2,799,214 | — | 92.8% | 6.8% | 0.35% |
-| Raw uncalibrated | 0.9050 | 0.5391 | 0.0054 | $2,871,342 | $72,128 | 94.6% | 4.9% | 0.49% |
-| **Class-rebalanced, refit** | **0.9029** | **0.5167** | **0.1389** | **$7,168,825** | **$4,369,611** | 46.5% | 52.2% | 1.27% |
-| Class-rebalanced, analytic¹ | 0.9050 | 0.5391 | 0.2009 | $9,434,296 | $6,635,082 | 26.8% | 71.2% | 1.97% |
+| Calibrated (isotonic) | 0.9045 | 0.5271 | 0.0027 | $2,799,797 | — | 92.8% | 6.8% | 0.35% |
+| Raw uncalibrated | 0.9050 | 0.5391 | 0.0054 | $2,871,342 | $71,545 | 94.7% | 4.9% | 0.49% |
+| **Class-rebalanced, refit** | **0.9029** | **0.5167** | **0.1389** | **$7,157,893** | **$4,358,096** | 46.5% | 52.2% | 1.27% |
+| Class-rebalanced, analytic¹ | 0.9050 | 0.5391 | 0.2009 | $9,424,667 | $6,624,870 | 26.8% | 71.0% | 1.96% |
 
 ¹ Closed-form prior shift, not a fitted model. Superseded — see below.
 
 The refit model's AUC is **0.0021 lower** than the champion's. No review process
 blocks a model on that; most teams would call it noise and many would not
-measure it at all. Its ECE is **40x worse**, and routed through an EV policy it
-challenges 52% of all traffic instead of 7% — costing **$4.37M/yr** more than
+measure it at all. Its ECE is **51x worse**, and routed through an EV policy it
+challenges 52% of all traffic instead of 7% — costing **$4.36M/yr** more than
 the calibrated champion.
 
 That is the operational point:

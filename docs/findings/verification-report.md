@@ -313,8 +313,14 @@ table.
 ### 4.6 Minor
 
 - `05_economics.py` fills missing tenure mappings with `ten.M_relationship.median()`.
-  Measured: no test-window rows hit that path (all seven buckets are populated), so it
-  is inert here — but it is a silent fallback that would mask a future bucketing bug.
+  ~~Measured: no test-window rows hit that path (all seven buckets are populated), so it
+  is inert here~~ — **corrected 2026-08-05 during E2 extraction: 41 of the 92,427 test
+  rows have `D1 = NaN` and do take this path.** The fallback is therefore load-bearing,
+  and the published numbers depend on it. It was preserved in the extracted library
+  (named `UNKNOWN_TENURE`, commented as a business assumption) rather than replaced with
+  a raise: a transaction with unknown tenure still requires a decision, and refusing to
+  decide is not an available action at checkout. Tracked as a Tier-4 data-quality signal
+  instead, which is the correct place to notice a bucketing bug.
 - The review-queue remap `a = np.where(a==2, 3, a)` after `e[[0,1,3]].argmax(0)` is
   correct (index 2 of the 3-row subset is action "deny"), but is fragile to anyone
   editing the action list. Verified correct as written.

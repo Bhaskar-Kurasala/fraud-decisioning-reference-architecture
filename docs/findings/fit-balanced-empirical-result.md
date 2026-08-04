@@ -38,20 +38,29 @@ per-transaction `L`/`M` from `data/econ_test.parquet`.
 
 ## Result
 
-| Score | AUC | PR-AUC | ECE | Annual cost | Allow | Challenge | Deny |
-|---|---|---|---|---|---|---|---|
-| Champion (isotonic) | 0.9045 | 0.5271 | 0.0035 | $2,799,214 | 92.8% | 6.8% | 0.35% |
-| Raw uncalibrated | 0.9050 | 0.5391 | 0.0054 | $2,871,342 | 94.6% | 4.9% | 0.49% |
-| Rebalanced — **analytic** | 0.9050 | 0.5391 | 0.2009 | $9,434,296 | 26.8% | 71.2% | 1.97% |
-| Rebalanced — **empirically refit** | **0.9029** | **0.5167** | **0.1389** | **$7,168,825** | 46.5% | 52.2% | 1.27% |
+Costed through the published **four-action** EV argmax (allow / challenge /
+review / deny), which is the policy the findings table reports:
+
+| Score | AUC | PR-AUC | ECE | Annual cost | Penalty | Reviewed |
+|---|---|---|---|---|---|---|
+| Champion (isotonic) | 0.9045 | 0.5271 | 0.0027 | $2,799,797 | — | 5 |
+| Raw uncalibrated | 0.9050 | 0.5391 | 0.0054 | $2,871,342 | $71,545 | 0 |
+| Rebalanced — **analytic** | 0.9050 | 0.5391 | 0.2009 | $9,424,667 | $6,624,870 | 171 |
+| Rebalanced — **empirically refit** | **0.9029** | **0.5167** | **0.1389** | **$7,157,893** | **$4,358,096** | 128 |
 
 Agreement between the two rebalanced scores: Spearman 0.907, max absolute
 probability difference 0.655.
 
+The same comparison under the three-action policy (review disallowed) gives
+$2,799,214 / $2,871,342 / $9,434,296 / $7,168,825 — a penalty of $4,369,611.
+The choice of policy moves the penalty by ~$11k, which is immaterial to the
+conclusion but matters for reproducibility, so both are recorded and both are
+locked by golden tests.
+
 ## What changed and what did not
 
-**The headline number is overstated by 38%.** The measured miscalibration
-penalty is **$4,369,611/yr** ($7,168,825 − $2,799,214), not $6,624,870. The
+**The headline number is overstated by 34%.** The measured miscalibration
+penalty is **$4,358,096/yr** ($7,157,893 − $2,799,797), not $6,624,870. The
 analytic construction exaggerated it because a pure prior shift inflates every
 probability by the same odds factor, whereas a real rebalanced fit also
 *restructures the trees* — it partially re-learns the problem and lands closer to
@@ -72,6 +81,31 @@ constructed:
 
 > A model can be indistinguishable from the champion on the metric you gate
 > promotion with, and still be catastrophically more expensive to operate.
+
+## Correction to an earlier version of this note
+
+An earlier revision reported the champion at $2,799,214 with ECE 0.0035 and
+attributed the $583 gap to the published $2,799,797 as "tie-breaking noise". That
+was wrong, and E2 caught it during extraction.
+
+The two figures are two different policies, not two measurements of one:
+
+- $2,799,214 — three-action argmax (allow / challenge / deny)
+- $2,799,797 — four-action argmax, which is what the findings table reports
+
+The $583 is the measured cost of *offering* analyst review. It is not noise; it
+is a real economic quantity, and it clears its $7.97/case cost on exactly 5 of
+92,427 transactions. The four-action argmax involves no ranking and therefore no
+ties, so the tie-break explanation could not have applied.
+
+The ECE discrepancy had the same cause — a different binning scheme. The
+research uses quantile *edges* with the outer bounds forced to [-1, 2];
+recomputing that way gives 0.0027, matching publication.
+
+Both errors came from reimplementing the policy and the metric from their
+description rather than from the source. That is precisely the drift ADR-0001
+exists to prevent, and it argues for the extracted library becoming the single
+definition used by the research scripts, the tests, and the service alike.
 
 ## Consequences for the production design
 
