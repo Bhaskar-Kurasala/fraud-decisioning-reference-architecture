@@ -256,5 +256,3 @@ def check_segments(inputs: GateInputs, thresholds: GateThresholds) -> CheckResul
         reason=f"no segment regressed beyond tolerance across {len(inputs.segments)} dimension(s)",
         detail=detail,
     )
-
-

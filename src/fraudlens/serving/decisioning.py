@@ -101,7 +101,9 @@ class Outcome:
     """One decision plus everything the ledger and the response need from it."""
 
     action: str
-    raw_score: float
+    # Both None on the degraded path. The rule ladder decides without a model,
+    # so there is no score to report and none to persist.
+    raw_score: float | None
     calibrated_probability: float | None
     reason_codes: tuple[str, ...]
     degraded: bool
@@ -196,9 +198,11 @@ def _fallback(request: DecideRequest, cause: ReasonCode) -> Outcome:
         action, rule = "challenge", ReasonCode.FALLBACK_RULE_DEFAULT_CHALLENGE
     return Outcome(
         action=action,
-        raw_score=0.0,
-        # Null rather than a number. There is no score; publishing a placeholder is how a
-        # degraded decision gets silently absorbed into a calibration report.
+        # Null rather than a number, for both. There is no score; publishing a
+        # placeholder is how a degraded decision gets silently absorbed into a
+        # calibration report — and 0.0 is the worst placeholder available, since it
+        # reads as "confidently legitimate".
+        raw_score=None,
         calibrated_probability=None,
         reason_codes=(cause.value, rule.value),
         degraded=True,

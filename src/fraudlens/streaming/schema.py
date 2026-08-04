@@ -82,8 +82,13 @@ decision_ledger = Table(
     Column("transaction_id", BigInteger, primary_key=True, autoincrement=False),
     Column("transaction_at", UtcDateTime, nullable=False),
     Column("decided_at", UtcDateTime, nullable=False),
-    Column("score", Float, nullable=False),
-    Column("calibrated_probability", Float, nullable=False),
+    # Nullable on purpose: a degraded decision comes from the rule ladder with
+    # no model behind it. Writing 0.0 would be a fabricated observation that
+    # drags every drift and calibration metric toward zero in proportion to the
+    # outage — the dashboards would look calmest exactly when the model was most
+    # broken.
+    Column("score", Float, nullable=True),
+    Column("calibrated_probability", Float, nullable=True),
     Column("action", Text, nullable=False),
     Column("reason_codes", JSON, nullable=False),
     Column("model_version", Text, nullable=False),
@@ -94,10 +99,19 @@ decision_ledger = Table(
     Column("degraded", Boolean, nullable=False),
     Column("degraded_reason", Text, nullable=True),
     CheckConstraint(
-        "calibrated_probability >= 0 AND calibrated_probability <= 1",
+        "calibrated_probability IS NULL"
+        " OR (calibrated_probability >= 0 AND calibrated_probability <= 1)",
         name="ck_decision_probability_range",
     ),
     CheckConstraint(f"action IN ({_ACTION_LIST})", name="ck_decision_action"),
+    # Keeps "probability IS NULL means degraded" a guarantee rather than a
+    # convention, so the filter every downstream metric depends on is
+    # enforceable instead of remembered.
+    CheckConstraint(
+        "(degraded = false AND calibrated_probability IS NOT NULL AND score IS NOT NULL)"
+        " OR (degraded = true AND calibrated_probability IS NULL AND score IS NULL)",
+        name="ck_decision_score_presence",
+    ),
     # ADR-0002 §4: a degraded decision must be excludable from downstream
     # analysis rather than silently absorbed. A row flagged degraded with no
     # stated reason cannot be excluded on evidence, so the pair is constrained.

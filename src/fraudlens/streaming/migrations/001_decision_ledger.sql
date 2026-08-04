@@ -13,8 +13,16 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
     transaction_id          BIGINT       PRIMARY KEY,
     transaction_at          TIMESTAMPTZ  NOT NULL,
     decided_at              TIMESTAMPTZ  NOT NULL,
-    score                   DOUBLE PRECISION NOT NULL,
-    calibrated_probability  DOUBLE PRECISION NOT NULL,
+    -- Nullable on purpose. A degraded decision is made by the rule ladder
+    -- without a model, so there is no score and no probability. Writing 0.0
+    -- would be a fabricated observation indistinguishable from a genuine
+    -- near-zero one, and it would drag every drift, calibration and
+    -- score-distribution metric toward zero in proportion to the outage —
+    -- the monitoring would look calmest exactly when the model was most
+    -- broken. NULL is the honest encoding; the CHECK below makes it
+    -- structural rather than conventional.
+    score                   DOUBLE PRECISION,
+    calibrated_probability  DOUBLE PRECISION,
     action                  TEXT         NOT NULL,
     reason_codes            JSON         NOT NULL,
     model_version           TEXT         NOT NULL,
@@ -26,9 +34,17 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
     degraded_reason         TEXT,
 
     CONSTRAINT ck_decision_probability_range
-        CHECK (calibrated_probability >= 0 AND calibrated_probability <= 1),
+        CHECK (calibrated_probability IS NULL
+            OR (calibrated_probability >= 0 AND calibrated_probability <= 1)),
     CONSTRAINT ck_decision_action
         CHECK (action IN ('allow', 'challenge', 'review', 'deny')),
+    -- A scored decision must carry its score, and a degraded one must not
+    -- invent one. Without this, "probability IS NULL" degrades from a
+    -- guarantee to a convention, and the filter that protects every
+    -- downstream metric stops being enforceable.
+    CONSTRAINT ck_decision_score_presence
+        CHECK ((degraded = false AND calibrated_probability IS NOT NULL AND score IS NOT NULL)
+            OR (degraded = true  AND calibrated_probability IS NULL     AND score IS NULL)),
     -- A degraded decision has to be excludable from downstream analysis on
     -- evidence, not on recollection. Flagged-but-unexplained is rejected.
     CONSTRAINT ck_decision_degraded_reason

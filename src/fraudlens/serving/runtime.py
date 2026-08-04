@@ -77,8 +77,10 @@ class DecisionWriter(Protocol):
         transaction_id: int,
         transaction_at: dt.datetime,
         decided_at: dt.datetime,
-        score: float,
-        calibrated_probability: float,
+        # None on the degraded path — there was no model, so there is no score.
+        # A stand-in value here would be a fabricated observation.
+        score: float | None,
+        calibrated_probability: float | None,
         action: str,
         reason_codes: tuple[str, ...],
         model_version: str,

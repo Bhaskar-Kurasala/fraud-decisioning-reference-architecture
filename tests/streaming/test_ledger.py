@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, select, text
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
 from fraudlens.streaming.ledger import DecisionLedger, DecisionRecord
+from fraudlens.streaming.schema import decision_ledger
 
 from .conftest import EPOCH
 
@@ -29,7 +30,69 @@ def make_decision(transaction_id: int = 3485113, **overrides: object) -> Decisio
         "input_hash": "deadbeef" * 4,
     }
     fields.update(overrides)
+    # A degraded decision was made without a model, so it carries no score. The
+    # record rejects the combination, so the helper keeps the two consistent
+    # unless a test overrides them deliberately.
+    if fields.get("degraded") and "score" not in overrides:
+        fields["score"] = None
+        fields["calibrated_probability"] = None
     return DecisionRecord(**fields)  # type: ignore[arg-type]
+
+
+def test_a_degraded_decision_cannot_carry_a_fabricated_score() -> None:
+    """The rule ladder has no model behind it, so there is no score to record.
+
+    Writing 0.0 would be indistinguishable from a genuine near-zero probability —
+    and 0.0 is the worst available placeholder, because it reads as "confidently
+    legitimate" precisely when nothing was assessed.
+    """
+    with pytest.raises(ValueError, match="degraded decision has no model score"):
+        make_decision(degraded=True, degraded_reason="model_unavailable", score=0.0)
+
+
+def test_a_scored_decision_must_carry_its_score() -> None:
+    """The converse. A non-degraded row with no score is an unexplainable decision."""
+    with pytest.raises(ValueError, match="must carry both score"):
+        make_decision(score=None, calibrated_probability=None)
+
+
+def test_degraded_rows_do_not_bias_the_score_distribution(engine: Engine) -> None:
+    """The reason the column is nullable, stated as an executable claim.
+
+    An outage that wrote 0.0 for every degraded decision would pull the observed
+    score distribution toward zero in proportion to its length — so the drift
+    dashboards would look calmest exactly when the model was most broken.
+    """
+    ledger = DecisionLedger(engine)
+    for i in range(10):
+        ledger.record(
+            make_decision(transaction_id=1000 + i, calibrated_probability=0.40, score=0.40)
+        )
+    for i in range(90):
+        ledger.record(
+            make_decision(
+                transaction_id=2000 + i,
+                action="challenge",
+                degraded=True,
+                degraded_reason="model_unavailable",
+            )
+        )
+
+    with engine.connect() as conn:
+        scored = (
+            conn.execute(
+                select(decision_ledger.c.calibrated_probability).where(
+                    decision_ledger.c.calibrated_probability.is_not(None)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    # 100 decisions were made, only 10 were scored. The mean reflects the ten that
+    # a model actually saw; had the outage written zeros it would read 0.04.
+    assert len(scored) == 10
+    assert sum(scored) / len(scored) == pytest.approx(0.40)
 
 
 def test_decision_round_trips_with_full_lineage(engine: Engine) -> None:

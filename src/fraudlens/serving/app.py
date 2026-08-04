@@ -231,10 +231,10 @@ def _persist(
     has already been chosen. The write is logged loudly instead, because a gap in an
     append-only ledger is an auditability incident even when the decision was correct.
 
-    KNOWN GAP, for the owner of `streaming.ledger`: `DecisionRecord.calibrated_probability`
-    is a non-null float in [0, 1], so the absence of a score on the degraded path cannot be
-    represented and is written as 0.0. Any query over calibrated probabilities MUST filter
-    `degraded = false`, or degraded rows will drag the distribution toward zero.
+    A degraded decision writes NULL for score and probability rather than a stand-in
+    value. The ledger enforces the pairing, so "probability IS NULL" is a guarantee that
+    the decision was made without a model — not a convention a later query has to
+    remember.
     """
     if writer is None:
         return
@@ -244,7 +244,7 @@ def _persist(
             transaction_at=request.transaction_at,
             decided_at=decided_at,
             score=outcome.raw_score,
-            calibrated_probability=outcome.calibrated_probability or 0.0,
+            calibrated_probability=outcome.calibrated_probability,
             action=outcome.action,
             reason_codes=outcome.reason_codes,
             model_version=versions.model_version,

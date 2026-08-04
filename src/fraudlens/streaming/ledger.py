@@ -33,8 +33,12 @@ class DecisionRecord:
     transaction_id: int
     transaction_at: dt.datetime
     decided_at: dt.datetime
-    score: float
-    calibrated_probability: float
+    # None when the decision was made without a model (see `degraded`). Not 0.0:
+    # a fabricated score is indistinguishable from a real near-zero one, and it
+    # biases every distribution built from this column toward zero in proportion
+    # to how long the model was down.
+    score: float | None
+    calibrated_probability: float | None
     action: str
     reason_codes: tuple[str, ...]
     model_version: str
@@ -51,8 +55,21 @@ class DecisionRecord:
         # rejected wholesale by the server with a constraint name.
         if self.action not in ACTIONS:
             raise ValueError(f"unknown action {self.action!r}; expected one of {ACTIONS}")
-        if not 0.0 <= self.calibrated_probability <= 1.0:
-            raise ValueError(f"calibrated_probability {self.calibrated_probability} outside [0, 1]")
+        probability = self.calibrated_probability
+        if probability is not None and not 0.0 <= probability <= 1.0:
+            raise ValueError(f"calibrated_probability {probability} outside [0, 1]")
+        # A scored decision must carry its score; a degraded one must not invent
+        # one. Enforced in the DB too — this is the comprehensible error.
+        scored = probability is not None and self.score is not None
+        unscored = probability is None and self.score is None
+        if self.degraded and not unscored:
+            raise ValueError(
+                "a degraded decision has no model score; leave score and probability None"
+            )
+        if not self.degraded and not scored:
+            raise ValueError(
+                "a non-degraded decision must carry both score and calibrated_probability"
+            )
         for name in ("transaction_at", "decided_at"):
             stamp: dt.datetime = getattr(self, name)
             if stamp.tzinfo is None:
