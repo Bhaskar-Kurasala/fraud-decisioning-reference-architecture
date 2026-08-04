@@ -20,7 +20,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
+from opentelemetry.trace import Tracer, TracerProvider
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.middleware.base import RequestResponseEndpoint
 
 from fraudlens.serving.contracts import (
     DecideRequest,
@@ -45,7 +47,13 @@ from fraudlens.serving.latency import (
     TOTAL,
     StageTimings,
 )
-from fraudlens.serving.metrics import DECISIONS
+from fraudlens.serving.metrics import (
+    LEDGER_WRITE_FAILURES,
+    MODEL_LOAD_SECONDS,
+    MODEL_LOADED,
+    REQUESTS,
+    observe_decision,
+)
 from fraudlens.serving.runtime import (
     Clock,
     DecisionWriter,
@@ -54,6 +62,7 @@ from fraudlens.serving.runtime import (
     ServiceState,
     utc_now,
 )
+from fraudlens.serving.tracing import record_decision_trace, tracer_for
 
 logger = logging.getLogger(__name__)
 
@@ -85,15 +94,33 @@ def create_app(
     clock: Clock = utc_now,
     elapsed: Elapsed = time.perf_counter,
     writer: DecisionWriter | None = None,
+    tracer_provider: TracerProvider | None = None,
 ) -> FastAPI:
-    """Build the service. `loader` runs once, in the lifespan startup hook."""
+    """Build the service. `loader` runs once, in the lifespan startup hook.
+
+    `tracer_provider` defaults to None, which means no spans and no exporter. Tracing is
+    a parameter for the same reason the loader and the clock are: importing this module
+    must never open a connection, and an env-var-driven exporter would make that property
+    depend on the environment a test happens to run in.
+    """
     state = ServiceState(loader, model_version_pin=model_version_pin)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # Load once per process. A failure here is recorded, not raised: the process must
         # come up so it can serve fail-safe decisions and report itself not-ready.
+        # `time.perf_counter`, deliberately not the injected `elapsed`. That seam exists to
+        # let a test script the *request* stage timings; drawing two values from it at
+        # startup would silently shift every scripted sequence by two steps and the latency
+        # tests would then be asserting on the wrong stage. Startup is not in the §4.3
+        # budget, so it does not need the injected clock.
+        started = time.perf_counter()
         state.load()
+        # Timed because a load slow enough to trip a start-up probe gets the pod killed and
+        # retried forever, which from outside is indistinguishable from a crash loop. Zero
+        # on failure: reporting the time-to-fail as a load time would flatter it.
+        MODEL_LOAD_SECONDS.set(time.perf_counter() - started if state.ready else 0.0)
+        MODEL_LOADED.set(1 if state.ready else 0)
         yield
 
     app = FastAPI(
@@ -102,7 +129,14 @@ def create_app(
         description=_DESCRIPTION,
         lifespan=lifespan,
     )
-    _register_routes(app, state, clock=clock, elapsed=elapsed, writer=writer)
+    _register_routes(
+        app,
+        state,
+        clock=clock,
+        elapsed=elapsed,
+        writer=writer,
+        tracer=tracer_for(tracer_provider),
+    )
     return app
 
 
@@ -113,6 +147,7 @@ def _register_routes(
     clock: Clock,
     elapsed: Elapsed,
     writer: DecisionWriter | None,
+    tracer: Tracer,
 ) -> None:
     @app.post(
         "/v1/decide",
@@ -134,18 +169,31 @@ def _register_routes(
     def decide_endpoint(request: DecideRequest) -> DecideResponse:
         timings = StageTimings(elapsed)
         started = elapsed()
-        outcome = decide_transaction(request, state.scorer, timings)
-        decided_at = clock()
-        timings.record(TOTAL, (elapsed() - started) * 1000.0)
-
-        DECISIONS.labels(action=outcome.action, degraded=str(outcome.degraded).lower()).inc()
-        versions = VersionSet(
-            model_version=state.model_version,
-            policy_version=POLICY_VERSION,
-            feature_version=FEATURE_VERSION,
-            config_hash=CONFIG_HASH,
-            service_version=SERVICE_VERSION,
-        )
+        with tracer.start_as_current_span(TOTAL) as span:
+            # Wall-clock anchor for the reconstructed stage spans. Separate from
+            # `elapsed`, which is monotonic and has no epoch a tracing backend can plot.
+            anchor_ns = time.time_ns()
+            outcome = decide_transaction(request, state.scorer, timings)
+            decided_at = clock()
+            timings.record(TOTAL, (elapsed() - started) * 1000.0)
+            versions = VersionSet(
+                model_version=state.model_version,
+                policy_version=POLICY_VERSION,
+                feature_version=FEATURE_VERSION,
+                config_hash=CONFIG_HASH,
+                service_version=SERVICE_VERSION,
+            )
+            observe_decision(
+                action=outcome.action,
+                degraded=outcome.degraded,
+                amount=request.amount,
+                calibrated_probability=outcome.calibrated_probability,
+                reason_codes=outcome.reason_codes,
+            )
+            record_decision_trace(
+                tracer, span, request=request, outcome=outcome, versions=versions,
+                timings=timings, anchor_ns=anchor_ns,
+            )  # fmt: skip
         _persist(writer, request, outcome, decided_at, versions)
         return DecideResponse(
             transaction_id=request.transaction_id,
@@ -194,7 +242,28 @@ def _register_routes(
     def metrics() -> Response:
         return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+    _register_request_counter(app)
     _register_failsafe_handler(app)
+
+
+def _register_request_counter(app: FastAPI) -> None:
+    """Count every response by route template and status. Tier 3 throughput and errors.
+
+    `fraudlens_decisions_total` counts decisions, which is a different population: a 422
+    produced no decision, and that difference is the point. The 422 rate on `/v1/decide`
+    is the Tier 4 schema-violation rate, since `contracts` validates strictly and forbids
+    unknown fields; the 503 rate is the fail-safe handler, meaning a bug in this module.
+    """
+
+    @app.middleware("http")
+    async def count(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        # Route template, never `request.url.path`: a scanner walking /.env, /admin and a
+        # thousand friends would otherwise mint a time series per probe and take the
+        # registry down with it. Unmatched paths collapse to one label for that reason.
+        route = getattr(request.scope.get("route"), "path", "unmatched")
+        REQUESTS.labels(route=route, status=str(response.status_code)).inc()
+        return response
 
 
 def _register_failsafe_handler(app: FastAPI) -> None:
@@ -256,6 +325,11 @@ def _persist(
             degraded_reason=outcome.degraded_reason,
         )
     except Exception:
+        # Counted as well as logged. This is not a request error -- the customer got a
+        # correct decision -- it is an auditability incident, and "how many of your
+        # decisions can you not reconstruct?" is a question that has to be answerable
+        # from a number rather than by grepping a quarter of application logs.
+        LEDGER_WRITE_FAILURES.inc()
         logger.exception("ledger write failed for transaction %s", request.transaction_id)
 
 
