@@ -1,0 +1,50 @@
+# Postgres backing the decision ledger and the delayed-label table.
+#
+# Part of the `core` profile (spec §10): the ledger is not optional tooling, it
+# is the audit trail ADR-0002 ranks second, so the smallest runnable stack
+# includes it. Single node — ADR-0002 states plainly that HA topology is not
+# built here, because the failure modes this system exists to study are
+# model-level, not infrastructural.
+
+name: fraudlens
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["core", "full"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fraudlens}
+      POSTGRES_USER: ${POSTGRES_USER:-fraudlens}
+      # Local demo credential. The system never holds a PAN (ADR-0002: PCI
+      # scope avoided by design), so the blast radius of this database is
+      # decision metadata, not card data.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fraudlens}
+      # Deterministic UTC storage. The ledger's timestamps are the audit
+      # evidence; a server-local timezone would make them arguable.
+      PGTZ: UTC
+      TZ: UTC
+    command:
+      - postgres
+      # The replay writes one row per decision with no reads in the hot path,
+      # so durability is the only thing worth tuning and it is left at the
+      # default. Logging slow statements instead: a ledger write that misses
+      # its share of the 150 ms p99 budget must be visible, not inferred.
+      - -c
+      - log_min_duration_statement=200
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready, not a TCP probe: the port opens before the database will
+      # accept a connection, and a migration run against a half-started server
+      # fails in a way that looks like a schema bug.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fraudlens} -d ${POSTGRES_DB:-fraudlens}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

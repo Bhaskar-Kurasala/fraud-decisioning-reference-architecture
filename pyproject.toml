@@ -35,7 +35,10 @@ serving = [
     "opentelemetry-instrumentation-fastapi>=0.49b0",
 ]
 tracking = [
-    "mlflow>=2.17.0",
+    # Floor at 3.x: `fraudlens.models.tracking` uses a local SQLite backend because
+    # MLflow 3 put the `./mlruns` file store into maintenance mode and refuses it
+    # without an opt-out env var. On 2.x that code path is untested.
+    "mlflow>=3.15.1,<4",
 ]
 streaming = [
     "psycopg[binary]>=3.2.0",
@@ -135,6 +138,11 @@ type = "layers"
 # the epics land; the constraint applies to whichever are present.
 layers = [
     "(fraudlens.serving)",
+    # Streaming sits above policy on purpose. The ledger records an
+    # already-computed decision rather than computing one, so it must not
+    # import the policy layer — an audit trail that depends on the thing it
+    # audits cannot be tested, or written, independently of it.
+    "(fraudlens.streaming)",
     "(fraudlens.policy)",
     "(fraudlens.economics)",
     "(fraudlens.models)",
