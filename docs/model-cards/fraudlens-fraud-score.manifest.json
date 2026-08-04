@@ -1,0 +1,20 @@
+{
+  "artifact": "fraudlens-fraud-score v2 model card",
+  "caveats": [
+    "Produced from a modified working tree. Commit 1e94d75bf94f5066a567972e0740e53eeb5c69df does NOT identify the code that ran, so this artifact cannot be regenerated from the repository alone."
+  ],
+  "config_hash": "e54735d01629a246b967356b5575fed394fd8930e9c07b575695fa8acf5da6fe",
+  "data_checksum": "797f845e5ab1b336ce9f14d3887842775def6b69c3eb90bac99e83435f6f43eb",
+  "generated_at": "2026-08-04T20:53:28.639910+00:00",
+  "git_dirty": true,
+  "git_sha": "1e94d75bf94f5066a567972e0740e53eeb5c69df",
+  "lock_digest": "70612094d8d081cc399f5b8822c62bef95d2651d24ab026df4cb6eb5e2860d67",
+  "missing_inputs": [],
+  "python_version": "3.12.12",
+  "regeneration_command": "uv run --extra tracking --extra streaming python scripts/regenerate_model_card.py",
+  "reproducible": false,
+  "seeds": {
+    "label_sim": 7,
+    "model_fit": 42
+  }
+}
