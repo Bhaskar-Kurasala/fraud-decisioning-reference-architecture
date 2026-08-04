@@ -12,18 +12,16 @@ field semantics are declared here rather than left to be inferred.
 
 from __future__ import annotations
 
-import datetime as dt
 import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Response, status
 from opentelemetry.trace import Tracer, TracerProvider
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from starlette.middleware.base import RequestResponseEndpoint
 
+from fraudlens.serving.audit import persist
 from fraudlens.serving.contracts import (
     DecideRequest,
     DecideResponse,
@@ -36,9 +34,7 @@ from fraudlens.serving.decisioning import (
     FEATURE_VERSION,
     POLICY_VERSION,
     SERVICE_VERSION,
-    Outcome,
     decide_transaction,
-    input_hash,
 )
 from fraudlens.serving.latency import (
     CALIBRATION_POLICY,
@@ -48,12 +44,11 @@ from fraudlens.serving.latency import (
     StageTimings,
 )
 from fraudlens.serving.metrics import (
-    LEDGER_WRITE_FAILURES,
     MODEL_LOAD_SECONDS,
     MODEL_LOADED,
-    REQUESTS,
     observe_decision,
 )
+from fraudlens.serving.middleware import register_failsafe_handler, register_request_counter
 from fraudlens.serving.runtime import (
     Clock,
     DecisionWriter,
@@ -194,7 +189,7 @@ def _register_routes(
                 tracer, span, request=request, outcome=outcome, versions=versions,
                 timings=timings, anchor_ns=anchor_ns,
             )  # fmt: skip
-        _persist(writer, request, outcome, decided_at, versions)
+        persist(writer, request, outcome, decided_at, versions)
         return DecideResponse(
             transaction_id=request.transaction_id,
             action=outcome.action,  # type: ignore[arg-type]  # narrowed by the fallback ladder
@@ -242,95 +237,8 @@ def _register_routes(
     def metrics() -> Response:
         return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
-    _register_request_counter(app)
-    _register_failsafe_handler(app)
-
-
-def _register_request_counter(app: FastAPI) -> None:
-    """Count every response by route template and status. Tier 3 throughput and errors.
-
-    `fraudlens_decisions_total` counts decisions, which is a different population: a 422
-    produced no decision, and that difference is the point. The 422 rate on `/v1/decide`
-    is the Tier 4 schema-violation rate, since `contracts` validates strictly and forbids
-    unknown fields; the 503 rate is the fail-safe handler, meaning a bug in this module.
-    """
-
-    @app.middleware("http")
-    async def count(request: Request, call_next: RequestResponseEndpoint) -> Response:
-        response = await call_next(request)
-        # Route template, never `request.url.path`: a scanner walking /.env, /admin and a
-        # thousand friends would otherwise mint a time series per probe and take the
-        # registry down with it. Unmatched paths collapse to one label for that reason.
-        route = getattr(request.scope.get("route"), "path", "unmatched")
-        REQUESTS.labels(route=route, status=str(response.status_code)).inc()
-        return response
-
-
-def _register_failsafe_handler(app: FastAPI) -> None:
-    """Last line of defence: an unhandled error must not look like a success upstream.
-
-    `decide_transaction` already degrades safely, so reaching this means the failure was
-    in the framework rather than in scoring -- serialisation, or a bug in this module. A
-    503 is the honest answer there (§9a: "a fraud system that silently returns a default
-    score is worse than one that returns 503"); the caller's own timeout policy then
-    decides, rather than us inventing a decision from a state we do not understand.
-    """
-
-    @app.exception_handler(Exception)
-    async def unhandled(_: Request, exc: Exception) -> JSONResponse:
-        # Logged with the traceback: this branch means a bug in this module, and a 503 with
-        # no stack behind it is how such a bug survives a quarter.
-        logger.exception("unhandled error in scoring service")
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"detail": f"scoring service error: {type(exc).__name__}"},
-        )
-
-
-def _persist(
-    writer: DecisionWriter | None,
-    request: DecideRequest,
-    outcome: Outcome,
-    decided_at: dt.datetime,
-    versions: VersionSet,
-) -> None:
-    """Append the decision to the audit trail, if one is wired.
-
-    Failing to persist must not fail the decision: the customer is waiting and the action
-    has already been chosen. The write is logged loudly instead, because a gap in an
-    append-only ledger is an auditability incident even when the decision was correct.
-
-    A degraded decision writes NULL for score and probability rather than a stand-in
-    value. The ledger enforces the pairing, so "probability IS NULL" is a guarantee that
-    the decision was made without a model — not a convention a later query has to
-    remember.
-    """
-    if writer is None:
-        return
-    try:
-        writer.record_decision(
-            transaction_id=request.transaction_id,
-            transaction_at=request.transaction_at,
-            decided_at=decided_at,
-            score=outcome.raw_score,
-            calibrated_probability=outcome.calibrated_probability,
-            action=outcome.action,
-            reason_codes=outcome.reason_codes,
-            model_version=versions.model_version,
-            policy_version=versions.policy_version,
-            feature_version=versions.feature_version,
-            config_hash=versions.config_hash,
-            input_hash=input_hash(request),
-            degraded=outcome.degraded,
-            degraded_reason=outcome.degraded_reason,
-        )
-    except Exception:
-        # Counted as well as logged. This is not a request error -- the customer got a
-        # correct decision -- it is an auditability incident, and "how many of your
-        # decisions can you not reconstruct?" is a question that has to be answerable
-        # from a number rather than by grepping a quarter of application logs.
-        LEDGER_WRITE_FAILURES.inc()
-        logger.exception("ledger write failed for transaction %s", request.transaction_id)
+    register_request_counter(app)
+    register_failsafe_handler(app)
 
 
 def _latency_report(timings: StageTimings) -> LatencyReport:
