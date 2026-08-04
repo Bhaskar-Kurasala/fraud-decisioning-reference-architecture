@@ -2,7 +2,7 @@
 
 E1 measured a class-rebalanced refit of the champion at AUC 0.9029 against the
 champion's 0.9045 — a 0.0021 gap that no reasonable review process would block —
-which costs $4.37M/yr more, because its ECE is 0.1389 against 0.0035 and it
+which costs $4.36M/yr more, because its ECE is 0.1389 against 0.0027 and it
 challenges 52% of traffic instead of 7%.
 
 A registry that gates on discrimination promotes that model. This test asserts
@@ -88,13 +88,13 @@ def test_e1_numbers_still_reproduce(gate_inputs: GateInputs, replayed: dict[str,
     champion, challenger = gate_inputs.champion, gate_inputs.challenger
     assert champion.auc == pytest.approx(0.9045, abs=5e-4)
     assert challenger.auc == pytest.approx(0.9029, abs=5e-4)
-    assert champion.ece == pytest.approx(0.0035, abs=5e-4)
-    assert challenger.ece == pytest.approx(0.1389, abs=5e-3)
+    assert champion.ece == pytest.approx(0.0027, abs=5e-5)
+    assert challenger.ece == pytest.approx(0.1389, abs=5e-5)
 
     days = replayed["days"]
     annual = lambda c: float(c.sum()) * TRADING_DAYS_PER_YEAR / days  # noqa: E731
     penalty = annual(gate_inputs.challenger_cost) - annual(gate_inputs.champion_cost)
-    assert penalty == pytest.approx(4_369_611, rel=0.02)
+    assert penalty == pytest.approx(4_358_096, rel=1e-4)
 
 
 def test_auc_alone_would_have_promoted_it(gate_inputs: GateInputs) -> None:

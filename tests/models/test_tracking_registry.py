@@ -37,7 +37,7 @@ def _run() -> TrainingRun:
             n=92_427,
             auc=0.9045,
             pr_auc=0.5271,
-            ece=0.0035,
+            ece=0.0027,
             calibration_slope=0.98,
             calibration_intercept=-0.02,
             brier=0.02201,
@@ -59,7 +59,7 @@ def test_a_logged_run_carries_its_full_provenance(client: Any) -> None:
 
     logged = client.get_run(run_id)
     assert logged.data.params["max_iter"] == "400"
-    assert logged.data.metrics["ece"] == pytest.approx(0.0035)
+    assert logged.data.metrics["ece"] == pytest.approx(0.0027)
     assert logged.data.metrics["expected_cost_per_txn"] == pytest.approx(2.6557)
     assert logged.data.tags["fraudlens.git_sha"] == "a" * 40
     assert logged.data.tags["fraudlens.git_dirty"] == "false"
@@ -168,7 +168,7 @@ def _metrics(ece: float, cost: float) -> ModelMetrics:
 def _winning_inputs() -> GateInputs:
     champion_cost = np.random.default_rng(5).gamma(2.0, 1.0, size=10_000)
     return GateInputs(
-        champion=_metrics(0.0035, 2.0),
+        champion=_metrics(0.0027, 2.0),
         challenger=_metrics(0.0040, 1.7),
         champion_cost=champion_cost,
         challenger_cost=champion_cost - 0.3,
@@ -179,7 +179,7 @@ def _winning_inputs() -> GateInputs:
 def _losing_inputs() -> GateInputs:
     champion_cost = np.random.default_rng(5).gamma(2.0, 1.0, size=10_000)
     return GateInputs(
-        champion=_metrics(0.0035, 2.0),
+        champion=_metrics(0.0027, 2.0),
         challenger=_metrics(0.1389, 4.0),
         champion_cost=champion_cost,
         challenger_cost=champion_cost + 0.3,

@@ -2,7 +2,7 @@
 
 Discrimination metrics (AUC, PR-AUC) answer "does the score rank fraud above
 non-fraud". They are necessary and badly insufficient: E1 measured a model
-0.0021 AUC below champion that costs $4.37M/yr more, because a four-action EV
+0.0021 AUC below champion that costs $4.36M/yr more, because a four-action EV
 policy consumes the *probability*, not the ranking. Every metric here except
 AUC and PR-AUC is sensitive to that difference; expected cost is the one the
 gate actually decides on.
@@ -63,16 +63,21 @@ def expected_calibration_error(
     almost every transaction lands in the bottom equal-width bin, so equal-width
     ECE is dominated by one bucket and reports ~0 for a badly miscalibrated
     model. Quantile binning puts equal *mass* in each bin, which is what makes
-    the 0.0035 vs 0.1389 separation visible.
+    the 0.0027 vs 0.1389 separation visible.
+
+    The binning matches `research/03b_calibrate.py` exactly — quantile edges with
+    the outer bounds forced open, assigned right-open via `digitize`. That is not
+    fussiness: ECE is sensitive to tie handling at this base rate, and E2 traced
+    a published-number discrepancy to a reimplementation that binned
+    right-closed instead. This function is intended to become the single
+    definition the research scripts, the tests and the service all share.
     """
     if n_bins < 1:
         raise ValueError("n_bins must be >= 1")
     n = len(y_prob)
     edges = np.quantile(y_prob, np.linspace(0.0, 1.0, n_bins + 1))
-    # Nudge the lower edge so the minimum score lands in bin 0 rather than
-    # underflowing to index -1.
-    edges[0] -= 1e-12
-    bin_index = np.clip(np.searchsorted(edges, y_prob, side="left") - 1, 0, n_bins - 1)
+    edges[0], edges[-1] = -1.0, 2.0
+    bin_index = np.digitize(y_prob, edges[1:-1])
 
     error = 0.0
     for b in range(n_bins):

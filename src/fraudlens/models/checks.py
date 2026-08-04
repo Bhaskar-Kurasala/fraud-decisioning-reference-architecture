@@ -48,8 +48,8 @@ class GateThresholds:
     label_maturity_days: int = 90
 
     # Absolute ECE regression allowed against the incumbent. The champion sits
-    # at 0.0035; 0.01 leaves room for genuine sampling noise between windows
-    # while sitting 13x below the 0.1389 that E1 showed costs $4.37M/yr.
+    # at 0.0027; 0.01 leaves room for genuine sampling noise between windows
+    # while sitting 14x below the 0.1389 that E1 showed costs $4.36M/yr.
     max_ece_regression: float = 0.01
 
     # The cost test must show the challenger *cheaper*, not merely not-worse:

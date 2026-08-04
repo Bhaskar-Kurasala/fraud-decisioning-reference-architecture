@@ -2,7 +2,7 @@
 
 E1's measurement is the specification for this module. A class-rebalanced model
 scored AUC 0.9029 against the champion's 0.9045 — a 0.0021 gap no review process
-would block — and cost $4.37M/yr more, because its ECE was 0.1389 against 0.0035
+would block — and cost $4.36M/yr more, because its ECE was 0.1389 against 0.0027
 and it challenged 52% of traffic instead of 7%. Any gate keyed on discrimination
 promotes that model. This one cannot.
 
