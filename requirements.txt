@@ -1,0 +1,9 @@
+# Pinned to the versions this pipeline was validated against.
+# Python 3.12.3
+pandas==3.0.2
+numpy==2.4.4
+scikit-learn==1.8.0
+scipy==1.17.1
+pyarrow==25.0.0
+joblib==1.5.3
+threadpoolctl==3.6.0
