@@ -18,13 +18,34 @@ seven stage logs (2026-08-05 00:17–00:18). The directory is **not** a git
 repository and has no commit history.
 
 This spec covers converting that research artifact into a production system:
-serving, monitoring, observability, deployment, a data flywheel, and lineage —
-delivered as a legible commit history that demonstrates ML-architect reasoning.
+serving, monitoring, observability, deployment, a data flywheel, and lineage.
 
 ### 1.1 Purpose
 
-Primary audience is an engineering manager assessing **architect-level AI/ML
-thinking**. The system must genuinely work; the *reasoning* is the deliverable.
+The research established *what the right decision policy is*. It did not
+establish that we can **operate** one. Those are different problems, and the
+second is where fraud programmes usually fail.
+
+The findings are worth $2.4M/yr against a do-nothing baseline. That number is
+currently trapped in a set of scripts that ran once, on a laptop, against a
+static file. To collect it we need a system that scores live traffic within the
+checkout latency budget, keeps working when the fraud population shifts under
+us, tells us it has stopped working *before* the losses land, and can prove
+after the fact why any individual customer was declined.
+
+Each of those is an unsolved problem in the current state:
+
+| Research established | Operating requires |
+|---|---|
+| A policy worth $2.4M/yr on historical data | Evidence it still holds on traffic we have not seen |
+| Calibration is worth $6.6M/yr | Detection when calibration decays, before the loss appears |
+| Optimal thresholds vary by amount and tenure | Those thresholds applied per-transaction, in-line, under 150ms |
+| The model scored AUC 0.9045 once | Knowing whether today's model still does, given labels arrive 30–90 days late |
+| A policy derived by hand | A defensible basis for changing it, and for reverting |
+
+The investigation this spec plans is therefore: *what does it actually take to
+run this thing, and what breaks first?* The system must genuinely work — the
+reasoning about why it is built this way is recorded as it is discovered.
 
 ### 1.2 Environment (measured 2026-08-05)
 
@@ -378,7 +399,7 @@ Coverage target 85% on `src/fraudlens/`, enforced in CI.
 | E8 | Flywheel: trigger, shadow, challenger, promotion gate, rollback | E3, E7 |
 | E9 | Lineage: provenance, model cards, audit trail, reproducibility manifest | E3, E5 |
 | E10 | Deployment: compose stack, healthchecks, k8s manifests, load test, chaos | E6 |
-| E11 | Capstone: architecture doc, C4 diagrams, ADR index, interview narrative | all |
+| E11 | Synthesis: architecture doc, C4 diagrams, ADR index, operating handbook, what we would do differently | all |
 
 E3/E4/E5 are mutually independent and parallelisable, as are E7/E9.
 
@@ -386,7 +407,11 @@ E3/E4/E5 are mutually independent and parallelisable, as are E7/E9.
 
 ## 9. Commit conventions
 
-The history is a reviewed artifact.
+The history is the lab notebook. Someone picking this system up in six months —
+or the same engineer after forgetting the details — needs to know why each
+choice was made and what was tried first. That is what makes the system
+maintainable; the fact that the reasoning is also legible to a reader is a
+consequence, not the goal.
 
 1. **One commit = one reasoning step.** Not one file.
 2. **Bodies carry reasoning**: problem, decision, rejected alternative, evidence.
@@ -418,6 +443,77 @@ the best global threshold on the test window.
 
 Epic: E2
 Refs: ADR-0004
+```
+
+---
+
+## 9a. Engineering standards
+
+These are binding on every epic. They exist because the failure mode of a
+twelve-epic plan executed in parallel is a large volume of plausible code that
+nobody can maintain.
+
+### Volume is not progress
+
+Every module must justify its existence against the alternative of not writing
+it. Specifically prohibited:
+
+- Abstractions with one implementation. No `BaseScorer` with a single subclass,
+  no strategy pattern for a strategy that never varies, no plugin registry for
+  two things.
+- Configuration for values that have never changed and have no reason to.
+- Wrapper layers that only forward calls.
+- Speculative extension points. If a second implementation arrives, the
+  abstraction can be extracted then, with knowledge of what actually varies.
+
+The economics module is the crown jewel and should be small: the cost functions
+are four lines of arithmetic that must be exactly right, not a framework.
+
+**Test for every file: can its purpose be stated in one sentence, and is that
+sentence load-bearing?** If not, it is deleted or merged.
+
+### Maintainability
+
+- Every public function typed; `mypy --strict` on `src/fraudlens/`.
+- Modules under ~300 lines. Beyond that is a signal of mixed responsibility.
+- Dependencies flow one direction: `config → features → models → economics →
+  policy → serving`. No cycles; enforced by an import-linter check in CI.
+- Errors that lose money or data are handled explicitly. Everything else fails
+  loudly rather than degrading silently — a fraud system that silently returns
+  a default score is worse than one that returns 503.
+
+### Reproducibility
+
+Non-negotiable, because the entire value of the findings rests on it.
+
+- Every artifact records the git SHA, config hash, and input data checksum that
+  produced it.
+- All seeds fixed and recorded; `SEED` already exists in `config.py`.
+- Dependencies pinned with a lockfile (`uv.lock`), committed.
+- Any published number regenerable by a single documented command.
+- A decision in the ledger can be replayed: same inputs + same recorded model
+  and policy versions must produce the same output. This is asserted by a test,
+  not assumed.
+
+### Commentary standard
+
+Comments explain **why**, never what. The bar: a comment earns its place if it
+records a decision, a constraint, a business consequence, or a non-obvious
+failure mode. Specifically valuable here — noting where a line encodes a
+business assumption rather than a technical fact, since those are the lines that
+need review when the business changes.
+
+```python
+# Break-even falls as amount rises: L grows at the COGS rate (0.70) while M
+# grows at the margin rate (0.30) plus a fixed relationship cost. Consequence:
+# we must be 73% sure to decline a $20 order but only 37% sure on a $500 one,
+# which inverts the intuition most fraud teams operate on.
+```
+
+Not:
+
+```python
+# calculate the break-even threshold
 ```
 
 ---
