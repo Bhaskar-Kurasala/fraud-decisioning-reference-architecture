@@ -13,6 +13,11 @@ dependencies = [
     "pandas==2.3.3",
     "scikit-learn==1.7.2",
     "pyarrow>=17.0.0",
+    # Not a serving concern: `fraudlens.config` is the bottom layer and every consumer
+    # of the cost model needs the business constants, so the settings library belongs
+    # in the base dependency set rather than in the serving extra.
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
 ]
 
 [project.optional-dependencies]
