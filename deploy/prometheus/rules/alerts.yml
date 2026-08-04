@@ -1,0 +1,192 @@
+# The seven alerts of design spec §5.2. Nothing else pages.
+#
+# The list is short on purpose. Every metric in §5 is worth looking at; almost none of them
+# are worth waking someone for, and a pager that fires for things nobody acts on stops being
+# read — at which point the two that matter are lost too. Everything not here is
+# dashboard-only.
+#
+# `runbook_url` is a repo-relative path rather than a URL. There is no published docs host
+# in this deployment, and an alert carrying a link that 404s is worse than one carrying a
+# path an engineer can open with the checkout they already have. The test in
+# tests/deploy/test_dashboards.py asserts each path resolves to a file that exists.
+#
+# Two of the seven — training-serving skew and promotion-gate failure — fire against
+# metrics that nothing exports yet, and carry a `pending_epic` label saying so. They are
+# written now, not later, because §9 orders instrumentation before the thing it measures,
+# and because an alert authored after the first incident is authored under pressure.
+# Prometheus tolerates a rule whose metric is absent: the expression returns no series and
+# the alert stays inactive rather than erroring.
+#
+# The other five reference metric names that exist today, split between the serving path
+# (`fraudlens.serving.metrics`) and the monitoring workers (`fraudlens.monitoring.report`).
+# tests/deploy/test_dashboards.py asserts that correspondence, because the alternative —
+# an alert whose metric was renamed — is silent, permanent, and only discovered during the
+# incident it was written for.
+
+groups:
+  - name: fraudlens-paging
+    rules:
+      # ------------------------------------------- Tier 0, from the monitoring workers
+      - alert: FraudLensScoreDrift
+        # PSI > 0.25 is `monitoring.drift.PSI_ALERT_THRESHOLD`, so the alert and the library
+        # agree by citation rather than by memory. It is the conventional "population has
+        # materially moved" line; 0.1-0.25 is a watch band and lives on the dashboard.
+        #
+        # `max by (feature)` rather than a pinned feature label: the monitoring job emits
+        # score-distribution PSI today under whatever name the baseline gave the score
+        # reference, and per-feature PSI under the same gauge when E7 widens it. Alerting
+        # on the maximum means widening the monitor does not silently leave the new series
+        # unwatched.
+        expr: max by (feature) (fraudlens_drift_psi) > 0.25
+        # 30m: PSI is computed over a window by a scheduled worker, so a single reading is
+        # already a window. Two consecutive confirmations, not a spike.
+        for: 30m
+        labels:
+          severity: page
+          tier: "0"
+        annotations:
+          summary: "Score distribution has moved {{ $value | printf \"%.3f\" }} PSI from the training baseline"
+          description: >-
+            The earliest warning this system has. Labels are 30-90 days behind, so a shifted
+            score distribution is the only same-day evidence that the population the model
+            was fitted on is not the population it is now scoring.
+          runbook_url: docs/runbooks/score-drift.md
+
+      - alert: FraudLensDataBreakage
+        # Two arms, because the two paths see different halves of the same failure.
+        #
+        # The first is the serving path, unaided and in real time. Without
+        # days_since_first_seen every customer is priced at the median relationship cost,
+        # so the false-positive term — and with it the whole decision boundary — moves. It
+        # is the only missing input the request path can see, and it is the one that costs
+        # money.
+        #
+        # The second is the monitoring job's per-feature null rate. Note it is compared
+        # against its own trailing window rather than against the training baseline that
+        # §5.2 names: the baseline null rates live inside the baseline artifact and are not
+        # exported as series, so the literal comparison is not expressible in PromQL today.
+        # Stated rather than quietly approximated — when E7 exports the baseline rate as a
+        # companion gauge, this arm becomes the comparison the spec actually asks for.
+        expr: |
+          (
+            fraudlens:unknown_tenure_rate:10m
+            > clamp_min(2 * avg_over_time(fraudlens:unknown_tenure_rate:10m[6h]), 0.02)
+          )
+          or
+          (
+            fraudlens_feature_null_rate
+            > clamp_min(2 * avg_over_time(fraudlens_feature_null_rate[24h]), 0.02)
+          )
+        for: 15m
+        labels:
+          severity: page
+          tier: "0"
+        annotations:
+          summary: "Tenure signal missing on {{ $value | humanizePercentage }} of decisions"
+          description: >-
+            Double the trailing window and at least 2% of rows. The floor is there because
+            a feature whose baseline is near zero would otherwise page on a single
+            malformed request.
+          runbook_url: docs/runbooks/data-breakage.md
+
+      # ------------------------------------------------------------------------ Tier 3, live
+      - alert: FraudLensLatencySLOBreach
+        expr: fraudlens:decide_latency_seconds:p99_5m > 0.150
+        # 10m sustained. §4.3 sets the SLO on p99, and a p99 computed over a 5m window is
+        # already sensitive to a handful of requests; paging on the first breached window
+        # would page on a GC pause. Ten minutes of sustained breach is a real regression.
+        for: 10m
+        labels:
+          severity: page
+          tier: "3"
+        annotations:
+          summary: "p99 decide latency {{ $value | humanizeDuration }} over the 150 ms budget"
+          description: >-
+            The decision blocks a checkout (ADR-0002 priority #3). The mean is served fine
+            while the p99 abandons carts, which is why this is written on the tail.
+          runbook_url: docs/runbooks/latency-slo.md
+
+      - alert: FraudLensDeclineAnomaly
+        # ±3σ against the trailing 6h of the same rate. clamp_min on the band because in a
+        # quiet window σ collapses toward zero and a bare 3σ test then fires on floating-point
+        # dust; 0.5pp is below anything a human would call a policy shift, so the floor
+        # costs no sensitivity that matters.
+        expr: |
+          abs(fraudlens:decline_rate:10m - avg_over_time(fraudlens:decline_rate:10m[6h]))
+          > clamp_min(3 * stddev_over_time(fraudlens:decline_rate:10m[6h]), 0.005)
+        for: 15m
+        labels:
+          severity: page
+          tier: "1"
+        annotations:
+          summary: "Decline rate {{ $value | humanizePercentage }} outside its trailing ±3σ band"
+          description: >-
+            Bidirectional on purpose. A decline rate that collapses is as alarming as one
+            that spikes: on the published policy the deny arm is 0.35% of traffic, so a
+            drop to zero means the boundary moved or the score did, and the loss from
+            approving everything lands months later.
+          runbook_url: docs/runbooks/decline-anomaly.md
+
+      # ------------------------------------------ Tier 2, gated on label maturity
+      - alert: FraudLensCalibrationDecay
+        # 0.02 sits deliberately between the two measured points: the calibrated champion
+        # runs ECE 0.0027, and the rebalanced refit that cost $4.36M/yr ran 0.1389
+        # (fraud-decisioning-findings.md §2). 0.02 is ~7x the champion — well outside normal
+        # variation — and ~7x below the known-catastrophic model, so it fires with room to
+        # act rather than after the money is gone.
+        #
+        # Gated on label maturity. §4.2 refuses to *evaluate* below a maturity threshold, and
+        # an ECE computed on 20% of the labels is a number about early-disputing fraud, not
+        # about the model. Alerting on it would page on the shape of the dispute pipeline.
+        #
+        # `fraudlens_calibration_ece` goes to NaN when the monitoring job refuses an
+        # immature window rather than holding its last value, so the maturity guard below
+        # is belt and braces - but it is kept, because a comparison against NaN is false
+        # and silence-by-NaN is not a property this alert should depend on.
+        expr: |
+          fraudlens_calibration_ece > 0.02
+          and on() fraudlens_label_maturity_ratio >= 0.8
+        for: 1h
+        labels:
+          severity: page
+          tier: "2"
+        annotations:
+          summary: "ECE {{ $value | printf \"%.4f\" }} on matured labels, above the 0.02 tolerance"
+          description: >-
+            Calibration, not ranking, is what the EV policy consumes. A model can hold its
+            AUC to within 0.002 and still cost $4.36M/yr through calibration alone.
+          runbook_url: docs/runbooks/calibration-decay.md
+
+      - alert: FraudLensTrainingServingSkew
+        # "Any detected mismatch" (§5.2), so no threshold and no `for`. Skew is not a
+        # degree-of-badness signal: it means the offline and online feature paths computed
+        # different values for the same row, which invalidates every offline number we have
+        # — including the ones the promotion gate is about to make a decision on.
+        expr: increase(fraudlens_training_serving_skew_total[1h]) > 0
+        labels:
+          severity: page
+          tier: "0"
+          pending_epic: E7
+        annotations:
+          summary: "Offline and online scores disagree on {{ $value }} replayed rows in the last hour"
+          description: >-
+            The only alert here with a threshold of zero. Everything measured offline is
+            conditional on this being empty.
+          runbook_url: docs/runbooks/training-serving-skew.md
+
+      # ------------------------------------------------------------- Tier 2, pending E8
+      - alert: FraudLensPromotionGateFailure
+        expr: increase(fraudlens_promotion_gate_failures_total[6h]) > 0
+        labels:
+          severity: page
+          tier: "2"
+          pending_epic: E8
+        annotations:
+          summary: "Challenger rejected by the promotion gate ({{ $value }} in 6h)"
+          description: >-
+            §4.2 is explicit that failing the gate is a normal outcome and is logged rather
+            than suppressed — so this is not "something broke". It pages because the
+            alternative is a gate that quietly rejects every challenger while the champion
+            ages past the population it was fitted on, and nobody notices for a quarter.
+            The action is to read the gate report, not to promote.
+          runbook_url: docs/runbooks/promotion-gate-failure.md

@@ -1,0 +1,41 @@
+# Prometheus for the fraud decisioning stack.
+#
+# One scrape job. There is one service on the checkout path and ADR-0002 rules out the
+# multi-node topology that would justify service discovery; a static target list that is
+# obviously correct beats a discovery mechanism nobody can debug at 3am.
+
+global:
+  # 15s because the tightest alert window below is 10m and the ±3σ decline-rate rule needs
+  # enough samples inside it for a standard deviation to mean anything. At 60s it would be
+  # ten points, which is a noise generator wearing an alert's clothes.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    system: fraudlens
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: fraudlens-api
+    metrics_path: /metrics
+    # The scrape must not be able to slow a decision. `prometheus_client`'s exposition is
+    # in-process and lock-free, so this is cheap, but the timeout is short anyway: a
+    # monitoring system that adds latency to the thing it monitors is a liability.
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          component: scoring
+
+  # Monitoring workers (E7) expose drift, calibration and label-maturity metrics on their
+  # own port. Scraped separately because they run on a schedule measured in minutes and a
+  # missed scrape there means a stale panel, while a missed scrape on the API above means
+  # a blind spot on the checkout path. Different failure, different target.
+  - job_name: fraudlens-monitoring
+    metrics_path: /metrics
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["monitoring:8001"]
+        labels:
+          component: monitoring

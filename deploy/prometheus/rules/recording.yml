@@ -1,0 +1,55 @@
+# Recording rules: the handful of expressions that appear in more than one place.
+#
+# They exist for one reason. The ±3σ decline-rate alert, written inline, is a ratio of two
+# aggregations repeated three times inside a subquery — roughly 400 characters that nobody
+# reviewing the alert can verify by eye, and which would then be copy-pasted (and slowly
+# diverge) into the executive dashboard. Naming the rate once means the alert and the panel
+# are looking at the same number by construction, not by coincidence.
+#
+# Naming convention is Prometheus' own: level:metric:operation.
+
+groups:
+  - name: fraudlens-serving
+    interval: 30s
+    rules:
+      - record: fraudlens:decisions:rate5m
+        expr: sum by (action) (rate(fraudlens_decisions_total[5m]))
+
+      - record: fraudlens:decline_rate:10m
+        # clamp_min on the denominator, not a `> 0` guard: with zero traffic the ratio is
+        # undefined, and we want the series to go to 0 rather than disappear. A vanishing
+        # series makes `stddev_over_time` below silently narrow its window, which would
+        # tighten the ±3σ band exactly when we have the least evidence.
+        expr: |
+          sum(rate(fraudlens_decisions_total{action="deny"}[10m]))
+          / clamp_min(sum(rate(fraudlens_decisions_total[10m])), 0.0001)
+
+      - record: fraudlens:degraded_rate:5m
+        expr: |
+          sum(rate(fraudlens_decisions_total{degraded="true"}[5m]))
+          / clamp_min(sum(rate(fraudlens_decisions_total[5m])), 0.0001)
+
+      - record: fraudlens:decide_latency_seconds:p99_5m
+        # `stage="total"` is the SLO line from §4.3. The per-stage series stay unaggregated
+        # on the serving dashboard, because the allocation is what localises a breach —
+        # "the request took 400 ms" is not an actionable page.
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(fraudlens_decision_stage_seconds_bucket{stage="total"}[5m]))
+          )
+
+      - record: fraudlens:unknown_tenure_rate:10m
+        # The one missing-input rate the request path can honestly see. `days_since_first_seen`
+        # is the only field whose absence changes the *price* of the decision (it selects the
+        # relationship-cost term), and the reason code is emitted whenever it is absent. A
+        # jump here means the upstream tenure lookup broke — which is a data-breakage
+        # incident that arrives before any label ever could.
+        expr: |
+          sum(rate(fraudlens_reason_codes_total{code="UNKNOWN_TENURE_PRICED_AS_MEDIAN"}[10m]))
+          / clamp_min(sum(rate(fraudlens_decisions_total[10m])), 0.0001)
+
+      - record: fraudlens:gmv_usd:rate1h
+        # `_sum` of the amount histogram is GMV through each arm. Per hour rather than per
+        # second because this is the business pulse and nobody reasons about dollars/second.
+        expr: sum by (action) (rate(fraudlens_decision_amount_usd_sum[1h])) * 3600
