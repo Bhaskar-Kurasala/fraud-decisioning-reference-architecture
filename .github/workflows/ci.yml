@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv python install 3.10
+
+      - name: Install
+        run: uv sync --all-extras --dev
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      # Guards the dependency direction declared in pyproject.toml. Without
+      # this, the layering is a comment rather than a constraint.
+      - name: Architecture contracts
+        run: uv run lint-imports
+
+      # Golden tests are separated so a failure is unambiguous: it means a
+      # published finding changed, which is a decision to make rather than a
+      # bug to fix quietly.
+      - name: Unit tests
+        run: uv run pytest -m "not golden and not integration and not slow" --cov=src/fraudlens --cov-report=term-missing
+
+      - name: Golden-value tests (published findings)
+        run: uv run pytest -m golden -v

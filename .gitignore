@@ -32,3 +32,6 @@ htmlcov/
 *.swp
 .idea/
 .vscode/
+
+# uv virtualenv
+.venv/

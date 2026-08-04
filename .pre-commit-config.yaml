@@ -1,0 +1,25 @@
+# Fast checks only. Anything slow (mypy on the full tree, the test suite) runs
+# in CI — a pre-commit hook that takes 30s gets bypassed with --no-verify, and a
+# check that is routinely bypassed is not a check.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      # The dataset is 678MB. A single accidental `git add data/` would make the
+      # repository unusable to clone, and rewriting history to remove it is far
+      # more expensive than blocking it here.
+      - id: check-added-large-files
+        args: ["--maxkb=5000"]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
