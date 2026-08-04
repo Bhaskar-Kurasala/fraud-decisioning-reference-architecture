@@ -52,6 +52,10 @@ dev = [
     "mypy>=1.13.0",
     "import-linter>=2.1",
     "pre-commit>=4.0.0",
+    # Transport for `fastapi.testclient.TestClient`. The serving contract tests drive the
+    # app in-process; without this they would need a running uvicorn, which the testing
+    # standard in §9a rules out.
+    "httpx>=0.27.0",
 ]
 
 [build-system]
