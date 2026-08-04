@@ -32,25 +32,56 @@ third action is ~68% of it. Same model, same score, same AUC throughout.
 
 ---
 
-## 2. Miscalibration costs $6.6M/yr at identical AUC
+## 2. Miscalibration costs $4.4M/yr at an AUC difference nobody would block
 
-Three scorings of the same model on the same test set, routed through the same
+> **Corrected 2026-08-05.** This section previously claimed $6.6M/yr "at
+> identical AUC", derived from an analytic prior shift rather than a fitted
+> model. The refit has since been run. The penalty is **$4.37M/yr** and the AUC
+> is *not* identical. Full derivation:
+> [`docs/findings/fit-balanced-empirical-result.md`](docs/findings/fit-balanced-empirical-result.md).
+> The original row is retained below, marked, because the gap between the two is
+> itself the lesson.
+
+Four scorings of the same model on the same test set, routed through the same
 policy:
 
-| Score | AUC | ECE | Annual cost | Penalty | Allow | Challenge | Deny |
-|---|---|---|---|---|---|---|---|
-| Calibrated (isotonic) | 0.9045 | 0.0027 | $2,799,797 | — | 92.8% | 6.8% | 0.35% |
-| Raw uncalibrated | 0.9050 | 0.0054 | $2,871,342 | $71,545 | 94.7% | 4.9% | 0.49% |
-| Class-rebalanced, uncorrected | 0.9050 | 0.2009 | $9,424,667 | **$6,624,870** | 26.8% | 71.0% | 1.96% |
+| Score | AUC | PR-AUC | ECE | Annual cost | Penalty | Allow | Challenge | Deny |
+|---|---|---|---|---|---|---|---|---|
+| Calibrated (isotonic) | 0.9045 | 0.5271 | 0.0035 | $2,799,214 | — | 92.8% | 6.8% | 0.35% |
+| Raw uncalibrated | 0.9050 | 0.5391 | 0.0054 | $2,871,342 | $72,128 | 94.6% | 4.9% | 0.49% |
+| **Class-rebalanced, refit** | **0.9029** | **0.5167** | **0.1389** | **$7,168,825** | **$4,369,611** | 46.5% | 52.2% | 1.27% |
+| Class-rebalanced, analytic¹ | 0.9050 | 0.5391 | 0.2009 | $9,434,296 | $6,635,082 | 26.8% | 71.2% | 1.97% |
 
-The rebalanced score has **identical AUC and identical PR-AUC** to the champion
-— the ranking is unchanged to four decimals. Its probabilities are inflated 27x
-(it predicts 23.6% fraud on a 3.5% population). Routed through an EV policy it
-challenges 71% of all traffic and costs more than doing nothing at all.
+¹ Closed-form prior shift, not a fitted model. Superseded — see below.
 
-No ranking metric can see this. AUC is invariant to monotone transforms of the
-score, and rebalancing is exactly a monotone transform. Every dashboard a
-typical team runs would show this model as fine.
+The refit model's AUC is **0.0021 lower** than the champion's. No review process
+blocks a model on that; most teams would call it noise and many would not
+measure it at all. Its ECE is **40x worse**, and routed through an EV policy it
+challenges 52% of all traffic instead of 7% — costing **$4.37M/yr** more than
+the calibrated champion.
+
+That is the operational point:
+
+> A model can be indistinguishable from the champion on the metric you gate
+> promotion with, and still be catastrophically more expensive to run.
+
+**Why the original number was wrong, and why it is worth keeping visible.** The
+first version of this table constructed the rebalanced score analytically —
+multiplying the odds by `(1-π)/π = 27.4x` — because the real refit OOM'd on the
+3GB box the pipeline was developed on. That transform is strictly monotone, so
+AUC was *necessarily* unchanged. "Identical AUC" was arithmetic, not evidence.
+
+The fitted model differs because rebalancing does not merely rescale
+probabilities: it changes the loss weighting during training, so the trees split
+differently and the model partially re-learns the problem. It lands closer to
+the truth than the naive shift implies (ECE 0.139 vs 0.201), which is why the
+measured penalty is 34% smaller — and it pays for that with real discrimination
+loss the analytic version could not show.
+
+The conclusion survives the correction and is stronger for it. The original
+claim needed the reader to accept "identical AUC" as remarkable; the measured
+version shows something more dangerous, because a 0.002 AUC drop is a difference
+teams routinely ignore.
 
 ---
 
@@ -119,10 +150,17 @@ has negative value:
 
 | Ranking rule | Annual cost | Fraud in queue | Realised VoR |
 |---|---|---|---|
-| by score (case-mgmt default) | $2,997,388 | 69.1% | −$16,678 |
-| by uncertainty p(1−p) | $3,003,398 | 38.8% | −$17,041 |
+| by score (case-mgmt default) | $2,997,659² | 69.1% | −$16,678 |
+| by uncertainty p(1−p) | $3,003,436² | 38.8% | −$17,041 |
 | by uncertainty × exposure | $3,106,035 | 19.1% | −$28,116 |
 | by value-of-review | $2,980,763 | 58.2% | −$14,783 |
+
+² Corrected 2026-08-05, from $2,997,388 and $3,003,398. The isotonic score takes
+only 153 distinct values across 92,427 rows, so the rank-1,920 queue cut has 120
+exact ties (362 for `p(1−p)`) and `argsort` selected an arbitrary subset. The two
+rankings with no ties reproduced exactly. The error is under 0.01% and changes no
+conclusion, but it means those two rows were not reproducible run-to-run — a
+deterministic tie-break is required before any of this can be regression-tested.
 
 All four are worse than the $2,799,797 no-review policy. Ranking by
 uncertainty × exposure is the *worst* of the four — it fills the queue with
@@ -189,8 +227,26 @@ threshold-based systems, not of fraud systems generally.
 ## Method notes and limitations
 
 - LTV derived from observed spend, corrected for survivorship: conditioning on
-  ≥2 transactions inflated new-customer LTV from $323 to $1,999. P(repeat)
-  measured directly at 44.5% across 151,928 watchable customers.
+  ≥2 transactions inflated new-customer LTV from $323 to ~$2,000. P(repeat)
+  measured directly at 44.5% across 151,928 watchable customers. **The corrected
+  $323.43 reproduces exactly; the naive figure does not.** It was produced by a
+  `04_ltv.py` that no longer exists — only the corrected `04b_ltv.py` is in the
+  repository — so `run_all.sh` cannot regenerate it. Closest reconstruction is
+  $1,984.16. The survivorship effect is real and large; the specific number
+  should be read as "roughly 6x" rather than as a measured quantity.
+
+- **P1's threshold (p ≥ 0.698) is selected on the test set.** `05_economics.py`
+  sweeps 300 candidate thresholds against realised test-window cost with true
+  labels revealed, and keeps the best. That is an oracle choice no production
+  team could make in advance. It *flatters P1*, so the headline "the third action
+  is worth 3x the threshold tuning" is conservative — a fairly-selected threshold
+  would do no better and probably worse, widening the gap. P3 and P4 have no free
+  parameters and are honest out-of-sample decisions. The direction of the bias
+  favours the paper's conclusion, which is the direction to be sceptical of.
+
+- **No confidence intervals are attached to any dollar figure.** The test window
+  contains 3,213 fraud events; sampling error on a $2.8M annualised number is not
+  negligible, and no policy-selection holdout exists.
 - `p_churn|declined` is the one parameter with no data support here; it is
   tenure-graded from published false-decline research and should be treated as
   the softest input in the model.
