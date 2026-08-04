@@ -69,16 +69,26 @@ select = [
     "C4",        # comprehensions
     "SIM",       # simplify
     "PTH",       # use pathlib
+    "C90",       # mccabe complexity
+    "S",         # bandit security
+    "DTZ",       # naive datetimes — a decision ledger with ambiguous timestamps
+                 # cannot be audited across a DST boundary
     "RUF",
 ]
+
+# Complexity budget. A branchy function in the economics or policy path is a
+# function nobody can fully reason about, and this is the code that decides
+# whether to take money from a customer.
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 # Research scripts are the provenance of the published findings (ADR-0001).
 # They are preserved exactly as they ran, so style rules are waived: reformatting
 # them would mean the committed code is no longer the code that produced the
 # published numbers. Correctness rules (F: pyflakes) still apply — an actual bug
 # in there would invalidate the findings and we want to know.
 [tool.ruff.lint.per-file-ignores]
-"research/*" = ["E", "W", "N", "UP", "B", "C4", "SIM", "PTH", "RUF", "I"]
-"tests/*" = ["S101"]
+"research/*" = ["E", "W", "N", "UP", "B", "C4", "SIM", "PTH", "RUF", "I", "C90", "S", "DTZ"]
+"tests/*" = ["S101"]  # assert is the point of a test
 
 [tool.mypy]
 python_version = "3.10"

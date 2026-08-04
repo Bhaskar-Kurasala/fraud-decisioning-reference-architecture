@@ -24,10 +24,23 @@ jobs:
       - name: Install
         run: uv sync --all-extras --dev
 
+      # research/ is excluded: those files are the provenance of the published
+      # findings (ADR-0001) and are preserved exactly as they ran. They carry 14
+      # known pyflakes findings — unused imports, and one F821 false positive
+      # where fit() closes over a module-level name that is later deleted.
+      # Recorded in docs/findings/verification-report.md rather than fixed,
+      # because editing them would mean the committed code is no longer the code
+      # that produced the numbers.
       - name: Lint
         run: |
-          uv run ruff check .
-          uv run ruff format --check .
+          uv run ruff check src tests
+          uv run ruff format --check src tests
+
+      # Tracked separately so regressions in the research tree are visible
+      # without blocking the build on a deliberate exemption.
+      - name: Lint research (advisory)
+        continue-on-error: true
+        run: uv run ruff check research --output-format=concise
 
       - name: Type check
         run: uv run mypy

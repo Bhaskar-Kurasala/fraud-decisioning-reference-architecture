@@ -1,0 +1,26 @@
+# Ownership. No orphan code — every path has someone accountable for it.
+#
+# In a real organisation these are distinct teams and the split matters:
+# the group that owns model quality is not the group that owns the checkout
+# path's latency, and the group that owns the cost constants is Finance/Risk
+# rather than Engineering. Encoded here so the review routing is explicit.
+
+*                           @kbhaskar36
+
+# The cost functions and business constants decide whether money is taken from
+# a customer. Changes here are risk decisions, not engineering decisions, and
+# should route to whoever owns the P&L — not merely to whoever can read Python.
+/src/fraudlens/economics/   @kbhaskar36
+/config.py                  @kbhaskar36
+
+# The policy layer converts scores into adverse actions against identifiable
+# customers. Requires compliance review in any regulated deployment.
+/src/fraudlens/policy/      @kbhaskar36
+
+# Provenance of every published number (ADR-0001). Changes to these files
+# invalidate the findings and must be justified, not tidied.
+/research/                  @kbhaskar36
+/fraud-decisioning-findings.md  @kbhaskar36
+
+# Decisions of record.
+/docs/adr/                  @kbhaskar36
