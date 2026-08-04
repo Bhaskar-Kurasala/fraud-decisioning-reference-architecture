@@ -142,6 +142,12 @@ type = "layers"
 # the epics land; the constraint applies to whichever are present.
 layers = [
     "(fraudlens.serving)",
+    # Monitoring and lineage read the ledger and the model registry; nothing on
+    # the request path may read them. Placing them below serving and above
+    # streaming states that: a drift computation can never end up inside the
+    # 150 ms budget by accident, because the import would break the contract.
+    "(fraudlens.monitoring)",
+    "(fraudlens.lineage)",
     # Streaming sits above policy on purpose. The ledger records an
     # already-computed decision rather than computing one, so it must not
     # import the policy layer — an audit trail that depends on the thing it
