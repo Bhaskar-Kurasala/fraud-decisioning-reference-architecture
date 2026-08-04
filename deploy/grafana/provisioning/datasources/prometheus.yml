@@ -1,0 +1,20 @@
+# Datasource as code. The dashboards reference the datasource by the fixed uid below
+# rather than by name or by Grafana's default flag, because a dashboard whose datasource
+# resolves to "whatever is default today" is a dashboard that renders empty on a fresh
+# stack and nobody can explain why.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: fraudlens-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Must match `global.scrape_interval` in prometheus.yml. When it does not, Grafana
+      # picks range steps finer than the data and every panel grows sawtooth gaps that
+      # look exactly like a service dropping requests.
+      timeInterval: 15s

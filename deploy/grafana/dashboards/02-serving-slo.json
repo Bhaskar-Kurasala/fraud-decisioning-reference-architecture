@@ -1,0 +1,104 @@
+{
+  "uid": "fraudlens-serving-slo",
+  "title": "02 Serving SLO - system and serving (Tier 3)",
+  "tags": ["fraudlens", "tier-3"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Decide latency p50 / p95 / p99 vs the 150 ms SLO",
+      "description": "LIVE. ADR-0002 priority #3: the tail is the SLO, not the mean - the mean is served fine while the p99 abandons carts. The threshold line is the 4.3 budget. Read with the degradation panel: a degraded decision skips inference and calibration entirely, so an outage makes these percentiles look better.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.15 }] }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(fraudlens_decision_stage_seconds_bucket{stage=\"total\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(fraudlens_decision_stage_seconds_bucket{stage=\"total\"}[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "fraudlens:decide_latency_seconds:p99_5m", "legendFormat": "p99 (SLO)" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "p99 by stage against its own 4.3 allocation",
+      "description": "LIVE. This is the panel that turns a latency page into an action. The allocation is features 60 ms, inference 25 ms, calibration+policy 15 ms, leaving 50 ms of overhead inside the 150 ms total. Whichever stage crosses its own line tells you whether to look at feature assembly or at the model; the aggregate cannot.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.99, sum by (le, stage) (rate(fraudlens_decision_stage_seconds_bucket{stage!=\"total\"}[5m])))", "legendFormat": "{{stage}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Latency budget breaches per minute, by stage",
+      "description": "LIVE. 4.3: 'Breaches counted as an SLO metric, not merely logged.' A log line is invisible to an error budget; this counter is what a burn-rate alert can be written against. A breach here is per-stage, so it fires even when the total stayed inside 150 ms - which is the early warning that one stage is eating another's headroom.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (stage) (rate(fraudlens_latency_budget_breaches_total[5m])) * 60", "legendFormat": "{{stage}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Throughput and error rate by status",
+      "description": "LIVE. Counted by route template, never raw path - a scanner walking /.env and friends would otherwise mint a time series per probe. Two statuses carry meaning beyond 'an error': 422 is the Tier 4 schema-violation rate (the contract validates strictly and forbids unknown fields, so a 422 is a caller sending something it did not send yesterday), and 503 is the fail-safe handler, which means a bug in the serving module rather than in the model - `decisioning` already degrades safely on its own.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (status) (rate(fraudlens_requests_total{route=\"/v1/decide\"}[5m]))", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Degraded decision rate, by cause",
+      "description": "LIVE, and it belongs on the serving board rather than the executive one because the fix is operational. A non-zero rate means adverse decisions are being made without a score: safe, since the ladder never returns allow, but expensive - it declines large baskets on new accounts on no evidence. `fraudlens:degraded_rate:5m` is the headline; the by-cause split separates 'the model never loaded' from 'scoring raised', which are different incidents.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "fraudlens:degraded_rate:5m", "legendFormat": "degraded share" },
+        { "refId": "B", "expr": "sum by (reason) (rate(fraudlens_degraded_decisions_total[5m]))", "legendFormat": "{{reason}} /s" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Model load, process memory and restarts",
+      "description": "LIVE. `fraudlens_model_loaded` is 0 whenever the process is serving fail-safe, which is the readiness signal in metric form. Load time is here because a load slow enough to trip a start-up probe gets the pod killed and retried forever, and from outside that is indistinguishable from a crash loop. Memory and restarts come from `prometheus_client`'s default process collectors rather than from our own gauges - re-exporting them under our own names would give two numbers that can disagree.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 15 },
+      "targets": [
+        { "refId": "A", "expr": "fraudlens_model_loaded", "legendFormat": "model loaded (0/1)" },
+        { "refId": "B", "expr": "fraudlens_model_load_seconds", "legendFormat": "load seconds" },
+        { "refId": "C", "expr": "process_resident_memory_bytes", "legendFormat": "RSS bytes" },
+        { "refId": "D", "expr": "changes(process_start_time_seconds[1h])", "legendFormat": "restarts/1h" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "text",
+      "title": "End-to-end traces, and the two Tier 3 metrics this deployment does not have",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Traces.** Spans are named for the same 4.3 stages as the histograms above - `total`, `features`, `inference`, `calibration_policy` - and every span carries `fraudlens.model_version`, `fraudlens.policy_version`, `fraudlens.feature_version` and `fraudlens.degraded`. That is what the histogram cannot do: it tells you inference is slow across all traffic, the span tells you the slow requests are the ones decided by a particular artifact.\n\nThe stage spans are *materialised from the same `StageTimings` measurements* the histograms use, not timed independently. Two clocks measuring the same three stages eventually disagree, and then the trace and the SLO tell different stories about one request. There is no trace panel embedded here because the stack ships no trace backend; `create_app(tracer_provider=...)` takes one when there is somewhere to send spans to, and exports nothing by default.\n\n**Feature lookup latency and cache hit rate: not applicable.** There is no feature store in this deployment. `FEATURE_VERSION` is `request-supplied-v1` - the caller assembles the vector and the `features` stage above is *economic* assembly (tenure bucketing and the two cost arms), not a lookup. In a deployment with a feature store this is usually the real cost and would be the first panel on this board; here a cache-hit-rate panel would be measuring a cache that does not exist."
+      }
+    }
+  ]
+}

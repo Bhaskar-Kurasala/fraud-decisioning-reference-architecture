@@ -1,0 +1,142 @@
+{
+  "uid": "fraudlens-executive",
+  "title": "00 Executive - business P&L (Tier 1)",
+  "tags": ["fraudlens", "tier-1", "landing"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": { "from": "now-7d", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "How to read this board",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "This is the **default landing dashboard**, ahead of latency and errors, because all four golden signals can be green while the system is at its most expensive: a model 0.0021 AUC below champion costs **$4.36M/yr** through calibration alone (`fraud-decisioning-findings.md` §2). Serving health is one layer down, on `02 Serving SLO`.\n\n**Two things gate every dollar figure here.** (1) *Label maturity* - chargebacks settle over 30-90 days, so anything derived from realised outcomes trails by a quarter and is stamped with its maturity on `01 Model health`. (2) *The soft assumption* - `P(churn|declined)` has no support in the data and drives the entire false-decline cost term. See the panel that depends on it.\n\nPanels marked **AWAITING E7** are wired to metric names the drift/calibration workers will export. They are empty by construction today, not broken."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Net value saved ($/day, annualised) - AWAITING E7",
+      "description": "The headline number and the objective function. Baseline is P0 approve-everything at $5,248,067/yr; the published policy saves $2,448,270/yr (46.7%). AWAITING E7: requires matured labels, so it cannot be emitted from the request path - at decision time the outcome does not exist yet.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "fraudlens_net_value_saved_usd_per_day", "legendFormat": "net saved/day" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cost per decision - AWAITING E7",
+      "description": "Unit economics: total realised cost divided by decisions served. AWAITING E7 for the realised half. Note the expected half IS computable synchronously - the EV argmax prices every action it rejects - but `decisioning.Outcome` does not currently return the cost arms, so it is deferred rather than impossible.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "fraudlens_cost_per_decision_usd", "legendFormat": "$ / decision" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Realised vs expected total cost - AWAITING E7",
+      "description": "Calibration expressed in dollars, which is the only form of it an executive can act on. If the model is calibrated these two lines track; a persistent gap IS miscalibration, measured in the currency the business is paid in rather than in ECE. AWAITING E7 (realised side needs matured labels).",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "increase(fraudlens_realized_cost_usd_total[1d])", "legendFormat": "realised" },
+        { "refId": "B", "expr": "increase(fraudlens_expected_cost_usd_total[1d])", "legendFormat": "expected" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Fraud loss $ and chargeback count (matured) - AWAITING E7",
+      "description": "The lagging truth. Published P&L splits $2,800,640/yr as fraud $1,979,064 (70.7%) and friction $820,278 (29.3%). Read alongside the maturity stamp on `01 Model health`: 38.7% of training-window fraud was still undisputed at the time of measurement, and the observed rate collapses to 6.9% of true in the final 20 days of any window. A falling line here at the right-hand edge is almost always immaturity, not improvement.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 11 },
+      "targets": [
+        { "refId": "A", "expr": "increase(fraudlens_fraud_loss_usd_total[1d])", "legendFormat": "fraud loss $/day" },
+        { "refId": "B", "expr": "increase(fraudlens_chargebacks_total[1d])", "legendFormat": "chargebacks/day" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "False-decline cost $ - ASSUMPTION-DEPENDENT - AWAITING E7",
+      "description": "BUSINESS ASSUMPTION ON THIS PANEL: every dollar plotted here is proportional to P(churn|declined), which has NO data support in IEEE-CIS. It is tenure-graded from published false-decline research, and it drives the entire false-positive cost term M = Amount*0.30 + relationship_cost(tenure). If that assumption is wrong, this panel is wrong by the same factor - and so is the break-even boundary the policy declines on (0.740 for a 1-7d account vs 0.379 at 400d+). Owner and review date are tracked on `03 Data quality` as assumption freshness. Do not quote this number without quoting the assumption.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "increase(fraudlens_false_decline_cost_usd_total[1d])", "legendFormat": "false-decline $/day" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "GMV by decision arm ($/hour)",
+      "description": "LIVE. Business pulse, from the serving path: the `_sum` of the per-decision amount histogram is the money flowing through each arm. Tier 1's 'decline $ / approve $ by amount band' comes from the same instrument's buckets - see `03 Data quality`. Deliberately not labelled by amount band here: the band boundaries live in `serving.reasons` and a second copy in a metric label would be a second definition of a business constant.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "fraudlens:gmv_usd:rate1h", "legendFormat": "{{action}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Decision mix (approve / challenge / deny rate)",
+      "description": "LIVE. Policy shift is visible here before any loss is. Published mix on the test window: allow 92.8%, challenge 6.8%, deny 0.35%. The rebalanced model that cost $4.36M/yr challenged 52.2% of traffic - which this panel would have shown on day one, a quarter before a single chargeback settled. That is the entire argument for Tier 0.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "fraudlens:decisions:rate5m / scalar(sum(fraudlens:decisions:rate5m))", "legendFormat": "{{action}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Approval rate by tenure segment - AWAITING E7",
+      "description": "New-customer approval is the growth metric, and it is the segment the policy is harshest on: a 1-7d account needs P(fraud) < 0.740 to be approved while a 400d+ account needs < 0.379. Aggregate approval rate hides a collapse here entirely. AWAITING E7: the tenure bucket is computed inside `decisioning` and is not a label on the serving counters, so this is derived from the ledger rather than from the request path.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "fraudlens_approval_rate", "legendFormat": "{{tenure_bucket}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "GMV denied while degraded ($/hour)",
+      "description": "LIVE. ADR-0002 records the cost of the fail-safe arm as 'false declines during degradation; must be measured, not assumed'. This is that measurement, and it is in dollars rather than decisions because dollars are what the arm costs. Non-zero here means the model was unavailable and the rule ladder was declining large baskets on new accounts.",
+      "datasource": { "type": "prometheus", "uid": "fraudlens-prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(fraudlens_decision_amount_usd_sum{degraded=\"true\", action=\"deny\"}[1h])) * 3600", "legendFormat": "denied while degraded" }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "text",
+      "title": "Value per analyst-hour - NOT APPLICABLE in this deployment",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 24 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Not awaiting anything - not applicable.** This deployment runs the three-action policy (`decisioning.INCLUDE_REVIEW = False`), so there is no review arm, no analyst queue, and no analyst-hours to divide by.\n\nThat is a measured choice, not an omission: on the test window the review arm is selected for **5 of 92,427** transactions at $7.97/case and costs **$583/yr more** than not having it, and all four queue rankings scored worse than the no-review policy. The synchronous path also cannot check a 60-slot/day capacity constraint inside 150 ms, so a four-action service would emit `review` for cases no analyst will ever see - an approve with extra steps.\n\nAn empty queue-depth panel here would imply a queue that is keeping up."
+      }
+    }
+  ]
+}

@@ -1,0 +1,298 @@
+{
+  "uid": "fraudlens-model-health",
+  "title": "01 Model health - label-dependent (Tier 2)",
+  "tags": [
+    "fraudlens",
+    "tier-2"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "5m",
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Everything below is 30-90 days behind reality",
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Read the maturity panel first.** Every metric on this board needs labels, and chargebacks settle over 30-90 days. The measured shape of that delay: 38.7% of training-window fraud was still undisputed when the findings were produced, and the observed fraud rate collapses to **6.9% of the true rate** in the final 20 days of any window.\n\nThe practical consequence is that the right-hand edge of every chart here lies in the same direction - it flatters the model. An AUC that looks like it is climbing this week is an AUC computed on the fraud that disputes fastest. `4.2` of the design spec therefore has the promotion gate *refuse* below a maturity floor rather than warn, and `FraudLensCalibrationDecay` is gated on `>= 0.8` matured at 30 days for the same reason.\n\nThe default time range is 90 days, not 24 hours, because a 24h view of this board is a view of noise.\n\nThe label-dependent panels are fed by the monitoring workers on a schedule; the serving-side score distribution is the one that answers in real time, and it is the proxy that has to carry the load until labels arrive. Panels still marked **AWAITING** belong to the flywheel (E8), which has not yet run a challenger."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Label maturity curve (% labelled at t+7/30/60/90d)",
+      "description": "Gates every other panel on this dashboard. Horizons match `monitoring.maturity.MATURITY_HORIZONS`. Below `monitoring.maturity.DEFAULT_MATURITY_FLOOR` (0.80) the numbers below are not wrong so much as they are about a biased subpopulation - the fraud that disputes early.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens_label_maturity_curve_ratio",
+          "legendFormat": "t+{{horizon_days}}d"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "ECE and calibration slope / intercept",
+      "description": "The most valuable panel on this board. Goes to a GAP, not to a stale value, when the monitoring job refuses an immature window - a gauge that simply stops updating keeps yesterday's reassuring 0.003 forever, and would look healthiest exactly when it had stopped measuring. Champion ECE is 0.0027; the class-rebalanced refit ran 0.1389 at an AUC only 0.0021 lower and cost $4.36M/yr routed through the same EV policy. Slope and intercept are here as well as magnitude because ECE says how wrong and these say which way - a slope below 1 means over-confidence, which the EV argmax converts directly into over-declining.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens_calibration_ece",
+          "legendFormat": "ECE"
+        },
+        {
+          "refId": "B",
+          "expr": "fraudlens_calibration_slope",
+          "legendFormat": "slope"
+        },
+        {
+          "refId": "C",
+          "expr": "fraudlens_calibration_intercept",
+          "legendFormat": "intercept"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Rolling AUC / PR-AUC on matured labels",
+      "description": "PR-AUC is the primary line at a 3.5% base rate; AUC is retained only because it is the number everyone asks for. Reference points: out-of-time AUC 0.9045, PR-AUC 0.527. Note what this panel CANNOT do - it cannot gate a promotion. The rebalanced model was within 0.0021 AUC of champion and $4.36M/yr worse.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens_model_pr_auc",
+          "legendFormat": "PR-AUC (primary)"
+        },
+        {
+          "refId": "B",
+          "expr": "fraudlens_model_auc",
+          "legendFormat": "AUC"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Actual vs predicted fraud rate",
+      "description": "Base-rate drift. A predicted rate that departs from the actual is the first-order calibration failure, and it is what the rebalanced model got catastrophically wrong: it predicted 23.6% fraud on a 3.5% population.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens_observed_fraud_rate",
+          "legendFormat": "actual (matured)"
+        },
+        {
+          "refId": "B",
+          "expr": "fraudlens_predicted_fraud_rate",
+          "legendFormat": "predicted"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Serving score distribution p50 / p95 (no labels required)",
+      "description": "LIVE from the request path itself, with no scheduled job in between, which makes it the only panel here that answers within seconds. It is the leading proxy for everything above: the predicted-probability distribution moves before any label arrives to confirm it. Degraded decisions are absent from this series rather than recorded as zero - a fallback decision has no probability, and observing 0.0 would drag the distribution toward 'confidently legitimate' exactly during an outage. The ledger-derived p95 is plotted next to the serving one on purpose: they are the same quantity measured by two independent paths, so a persistent gap between them means decisions are being served and not persisted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(fraudlens_calibrated_probability_bucket[30m])))",
+          "legendFormat": "p50 P(fraud)"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(fraudlens_calibrated_probability_bucket[30m])))",
+          "legendFormat": "p95 P(fraud)"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(fraudlens_calibrated_probability_sum[30m]) / rate(fraudlens_calibrated_probability_count[30m])",
+          "legendFormat": "mean P(fraud)"
+        },
+        {
+          "refId": "D",
+          "expr": "fraudlens_predicted_probability_p95",
+          "legendFormat": "p95 P(fraud), ledger-derived"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Champion vs challenger cost delta, with CI - AWAITING E7/E8",
+      "description": "The promotion gate's actual input (design spec 4.2): expected cost on matured labels, paired on the same transactions, sequentially tested. Sequential rather than fixed-horizon because a 1% fraud improvement is not detectable by naive A/B at realistic volumes. A CI straddling zero means the gate refuses, and refusing is a normal outcome.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens_challenger_cost_delta_usd",
+          "legendFormat": "delta"
+        },
+        {
+          "refId": "B",
+          "expr": "fraudlens_challenger_cost_delta_ci_low",
+          "legendFormat": "CI low"
+        },
+        {
+          "refId": "C",
+          "expr": "fraudlens_challenger_cost_delta_ci_high",
+          "legendFormat": "CI high"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Days since retrain - AWAITING E7/E8",
+      "description": "Staleness. Read next to the maturity curve: if maturity says we cannot yet evaluate the champion and this says it is 120 days old, the honest position is that we do not know whether it works - which is the state this whole system exists to make visible rather than comfortable.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 26
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens_days_since_retrain",
+          "legendFormat": "days"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Decile lift - AWAITING E7",
+      "description": "Analyst-legible ranking quality. Kept because it is the view a fraud analyst reasons in, not because it gates anything - see the AUC panel for why ranking metrics do not gate here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 9,
+        "x": 6,
+        "y": 26
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens_decile_lift",
+          "legendFormat": "decile {{decile}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "text",
+      "title": "Performance by segment",
+      "gridPos": {
+        "h": 6,
+        "w": 9,
+        "x": 15,
+        "y": 26
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**AWAITING E7.** Aggregate AUC hides segment collapse, and the segments that matter here are the ones the cost model already distinguishes: amount band and account tenure.\n\nThe reason it matters is in the boundary spread. Break-even runs 0.642 for a brand-new account and 0.379 at 400d+; by amount, 0.731 under $25 and 0.369 at $500+. A model that degrades only on new accounts moves an aggregate metric by almost nothing and moves the new-customer approval rate - the growth metric - by a lot.\n\nThe segment guard in the promotion gate reads the same breakdown: no segment may regress beyond tolerance even if the aggregate improves."
+      }
+    }
+  ]
+}

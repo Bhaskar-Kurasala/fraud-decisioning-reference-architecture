@@ -1,0 +1,435 @@
+{
+  "uid": "fraudlens-data-quality",
+  "title": "03 Data quality and drift detail (Tier 4 + Tier 0)",
+  "tags": [
+    "fraudlens",
+    "tier-4",
+    "tier-0"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Why this board exists",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Tier 0 (leading indicators, no labels needed) and Tier 4 (data quality and governance) share a board because they answer the same question from two sides: *has the input changed underneath a model we cannot yet evaluate?* Labels are 30-90 days out, so on any given day this board and `02 Serving SLO` are the only evidence that exists.\n\nThe drift panels are fed by the **monitoring workers**, not by the request path. PSI, KS and unseen-level rates all need the training baseline, and loading a reference distribution into the 150 ms decision budget is precisely what the import-linter contract exists to make impossible. The serving-side score distribution below is the half this process can honestly produce in real time, and it is the one that answers first: the workers run on a schedule measured in minutes.\n\nPanels still marked **AWAITING** need a window over more than one event (duplicates, out-of-order, training-serving skew) or a governance artifact that is not a runtime observation (assumption freshness)."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Score distribution PSI vs training baseline",
+      "description": "LIVE, from the monitoring workers. The earliest possible warning. 0.25 is `monitoring.drift.PSI_ALERT_THRESHOLD` and the FraudLensScoreDrift page; 0.10-0.25 is the watch band that lives here and does not page.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 0.25
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (feature) (fraudlens_drift_psi)",
+          "legendFormat": "score PSI"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Serving score distribution by bucket (share of traffic)",
+      "description": "LIVE. The serving half of the PSI computation, and useful on its own: the bucket edges are concentrated where the decision boundaries actually sit (break-even runs 0.369 to 0.740 across amount and tenure), so a shift across a boundary is visible here rather than smeared across a 0.1-wide bin. Degraded decisions contribute nothing to this series - a fallback decision has no probability, and recording 0.0 would make the distribution look calm during an outage.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (le) (rate(fraudlens_calibrated_probability_bucket[30m])) / scalar(sum(rate(fraudlens_calibrated_probability_count[30m])))",
+          "legendFormat": "<= {{le}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Top-10 drifting features (PSI / KS)",
+      "description": "LIVE, from the monitoring workers, and today it carries one series - the score itself, which `monitoring.report` treats as a monitored feature. It widens to per-column PSI as E7 extends the baseline to the feature vector; `topk` is here from the start because 225 series on one panel is a picture, not a diagnosis.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, fraudlens_drift_psi)",
+          "legendFormat": "PSI {{feature}}"
+        },
+        {
+          "refId": "B",
+          "expr": "topk(10, fraudlens_drift_ks)",
+          "legendFormat": "KS {{feature}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Null rate and unseen categorical level rate",
+      "description": "Null rate is the leading cause of silent failure: a feature that starts arriving empty does not raise, it just prices every customer as an average one. Unseen-level rate is entity churn - new cards, new devices, new email domains - which is normal at a low rate and a pipeline break at a high one. Both come from the monitoring workers, which hold the training baseline - the request path deliberately does not, because loading a reference distribution into the 150 ms budget is what the import-linter contract forbids. Read against the trailing window rather than against the baseline null rate, which lives inside the baseline artifact and is not exported as a series; that is a stated gap, not an approximation to ignore.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 11
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, fraudlens_feature_null_rate)",
+          "legendFormat": "null {{feature}}"
+        },
+        {
+          "refId": "B",
+          "expr": "topk(10, fraudlens_unseen_level_rate)",
+          "legendFormat": "unseen {{feature}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Missing tenure signal (priced as median)",
+      "description": "LIVE, and the alerting one - see FraudLensDataBreakage. `days_since_first_seen` is the only input whose absence changes the *price*: without it the relationship-cost term falls back to the median, which moves the false-positive arm and therefore the whole decision boundary. Surfaced as a reason code on the decision itself, so a disputing customer can be told the assumption was applied to them.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens:unknown_tenure_rate:10m",
+          "legendFormat": "unknown tenure share"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Reason-code mix",
+      "description": "LIVE. Note what this is NOT: `reason-code coverage` from the Tier 4 catalog is not plotted, because the response contract enforces at least one code (`min_length=1`, asserted by contract test) and a coverage gauge would read 100% forever - a metric that cannot move is worse than no metric, since it reads as evidence. The mix is the signal instead. A surge in a FALLBACK_RULE_* code is an outage; a surge in UNKNOWN_TENURE_PRICED_AS_MEDIAN is an upstream break; a shift between SCORE_ABOVE_* codes is the policy binding somewhere new.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (code) (rate(fraudlens_reason_codes_total[15m]))",
+          "legendFormat": "{{code}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Schema violation rate (422) and unpersisted decisions",
+      "description": "LIVE, both halves. 422 IS the schema-violation rate: the request contract runs strict validation with extra=\"forbid\", so a 422 means a caller sent a field, a type or a naive timestamp it did not send yesterday - and a malformed request produced no decision and wrote nothing, which is why it must never be counted as a degraded decision. Unpersisted decisions are the serving-side view of Tier 4 'complete lineage': the customer got a correct decision that we cannot reconstruct, which is an auditability incident rather than an error. It was previously only a log line.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(fraudlens_requests_total{status=\"422\"}[5m])) * 60",
+          "legendFormat": "schema violations/min"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(fraudlens_ledger_write_failures_total[5m]) * 60",
+          "legendFormat": "unpersisted decisions/min"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Training-serving skew, duplicates, out-of-order events - AWAITING E7",
+      "description": "All three need to see two of something and a single request sees one. Skew compares the offline and online score for the same row and has a zero threshold - it invalidates every offline number we hold. Duplicate and out-of-order rates are ledger-side. NOTE on out-of-order: a naive 'event time vs wall clock' lag metric is deliberately NOT emitted from the request path, because this deployment replays a 182-day historical window - event time is months behind wall clock by design, so that metric would either page constantly or be tuned until it means nothing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "increase(fraudlens_training_serving_skew_total[1h])",
+          "legendFormat": "skew events/h"
+        },
+        {
+          "refId": "B",
+          "expr": "increase(fraudlens_duplicate_transactions_total[1h])",
+          "legendFormat": "duplicates/h"
+        },
+        {
+          "refId": "C",
+          "expr": "increase(fraudlens_out_of_order_events_total[1h])",
+          "legendFormat": "out-of-order/h"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Assumption freshness: days since P(churn|declined) reviewed - AWAITING E7/E9",
+      "description": "BUSINESS ASSUMPTION TRACKER. P(churn|declined) has no data support in IEEE-CIS - it is tenure-graded from published false-decline research - and it drives the entire false-positive cost term, and therefore every decline boundary in the system. Production tooling cannot fix an unmeasurable input, so it is treated the way a risk organisation treats a number it cannot measure: a versioned artifact with a named owner, a review date, a sensitivity analysis, and this staleness counter. Making the softest number the most visible one is the point. The `owner` label is on the series so the panel names who is overdue.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 90
+              },
+              {
+                "color": "red",
+                "value": 180
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens_assumption_age_days",
+          "legendFormat": "{{assumption}} ({{owner}})"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Decision value by amount band ($/hour through each arm)",
+      "description": "LIVE. Tier 1's 'decline $ / approve $ by amount band' - where the policy binds. Bands come from the amount histogram's buckets rather than from a metric label, because the band boundaries are a business constant owned by `serving.reasons` and a second copy in a label would be a second definition of it. The bucket edges sit at the published break-even inflection points: under $25 we must be 73% sure to decline, at $500+ only 37%, which inverts the intuition most fraud teams operate on.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (action, le) (rate(fraudlens_decision_amount_usd_bucket[1h])) * 3600",
+          "legendFormat": "{{action}} <= ${{le}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Monitoring job health - is the thing that watches still watching?",
+      "description": "LIVE. Every Tier 0 and Tier 2 panel in this system is produced by a scheduled worker, which means a worker that has silently stopped leaves boards that look calm because nothing is updating them. This is the panel that distinguishes 'quiet' from 'dead'. `tier2_refusals` is not an error rate: refusing an immature window is the correct behaviour (spec 4.2 refuses rather than warns), and a sustained refusal count is the honest statement that we cannot yet evaluate the model. `baseline_info` carries the baseline_id every drift number on this board is measured against - if it changes, the comparison changed and the history above is not continuous.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (increase(fraudlens_monitoring_runs_total[6h]))",
+          "legendFormat": "runs/6h {{outcome}}"
+        },
+        {
+          "refId": "B",
+          "expr": "increase(fraudlens_monitoring_tier2_refusals_total[6h])",
+          "legendFormat": "tier-2 refusals/6h"
+        },
+        {
+          "refId": "C",
+          "expr": "fraudlens_monitoring_run_duration_seconds",
+          "legendFormat": "last run seconds"
+        },
+        {
+          "refId": "D",
+          "expr": "fraudlens_monitoring_baseline_info",
+          "legendFormat": "baseline {{baseline_id}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Serving counters vs ledger-derived rates (reconciliation)",
+      "description": "LIVE, and deliberately redundant. The same two quantities are measured twice by independent paths: the request path increments a counter as it decides, and the monitoring job recomputes the rates from the decision ledger. They should agree. When they do not, the gap IS the measurement - it means decisions were served but not persisted, which is an auditability incident that no error-rate panel would show because those requests returned 200. Read alongside `unpersisted decisions/min`.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraudlens-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fraudlens:decisions:rate5m / scalar(sum(fraudlens:decisions:rate5m))",
+          "legendFormat": "serving {{action}}"
+        },
+        {
+          "refId": "B",
+          "expr": "fraudlens_action_rate",
+          "legendFormat": "ledger {{action}}"
+        },
+        {
+          "refId": "C",
+          "expr": "fraudlens:degraded_rate:5m",
+          "legendFormat": "serving degraded"
+        },
+        {
+          "refId": "D",
+          "expr": "fraudlens_degraded_decision_rate",
+          "legendFormat": "ledger degraded"
+        }
+      ]
+    }
+  ]
+}
