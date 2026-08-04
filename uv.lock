@@ -1085,7 +1085,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'serving'", specifier = ">=0.115.0" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.115.0" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1" },
-    { name = "mlflow", marker = "extra == 'tracking'", specifier = ">=2.17.0" },
+    { name = "mlflow", marker = "extra == 'tracking'", specifier = ">=3.15.1,<4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
     { name = "numpy", specifier = "==2.2.6" },
     { name = "opentelemetry-api", marker = "extra == 'serving'", specifier = ">=1.28.0" },

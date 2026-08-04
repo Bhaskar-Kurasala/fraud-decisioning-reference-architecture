@@ -72,6 +72,20 @@ class BusinessConstants(BaseSettings):
     daily_review_slots: int = Field(default=60, ge=0)  # ~1 analyst FTE
     cost_per_decision: float = Field(default=0.0008, ge=0.0)  # infra, per scored event
 
+    # --- label arrival -----------------------------------------------------------
+    # BUSINESS ASSUMPTION. Chargebacks arrive lognormally: a cluster around a month
+    # and a long tail of late disputes. These govern how long a transaction is
+    # unusable for training, and they are the reason model decay is invisible for
+    # 30-90 days — the constraint the whole Tier 0 metric design exists to work
+    # around. Provenance of the published 38.7%-undisputed figure (research/06).
+    chargeback_median_days: float = Field(default=34.0, gt=0.0)
+    chargeback_log_sigma: float = Field(default=0.85, gt=0.0)
+    # A good transaction is never confirmed by a positive event; you learn it was
+    # good only when the dispute window closes silently. Networks allow up to 120
+    # days, 90 is the operating convention.
+    clean_window_days: float = Field(default=90.0, gt=0.0)
+    label_sim_seed: int = Field(default=7, ge=0)
+
     # --- relationship cost of declining a good customer --------------------------
     # BUSINESS ASSUMPTION, and the softest number in the system: P(churn | declined)
     # has no data support in IEEE-CIS. It is graded by tenure from published

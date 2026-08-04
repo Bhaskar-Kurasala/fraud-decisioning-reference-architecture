@@ -27,22 +27,8 @@ from statistics import NormalDist
 
 from sqlalchemy import Engine, select
 
+from fraudlens.config.settings import SETTINGS
 from fraudlens.streaming.schema import insert_ignoring_duplicates, revealed_labels
-
-# Mirrors CHARGEBACK_MEDIAN_DAYS / CHARGEBACK_LOG_SIGMA / SEED_LABEL_SIM in the
-# root config.py, which is the provenance of the published 38.7% figure. They
-# are restated rather than imported because config.py is the research entry
-# point, not a library; they move to fraudlens.config when E2 lands it.
-CHARGEBACK_MEDIAN_DAYS = 34.0
-CHARGEBACK_LOG_SIGMA = 0.85
-DEFAULT_LAG_SEED = 7
-
-# BUSINESS ASSUMPTION. A legitimate transaction is never confirmed by a
-# positive event; you learn it was good only when the dispute window closes
-# without a chargeback. Card network windows run to 120 days; 90 is the
-# operating convention. This number decides how long a transaction is
-# unusable for training, so it belongs in a review cycle, not in a constant.
-DEFAULT_CLEAN_WINDOW_DAYS = 90.0
 
 _NORMAL = NormalDist()
 
@@ -67,10 +53,10 @@ class DisputeLagModel:
     only distributionally identical.
     """
 
-    median_days: float = CHARGEBACK_MEDIAN_DAYS
-    log_sigma: float = CHARGEBACK_LOG_SIGMA
-    clean_window_days: float = DEFAULT_CLEAN_WINDOW_DAYS
-    seed: int = DEFAULT_LAG_SEED
+    median_days: float = SETTINGS.chargeback_median_days
+    log_sigma: float = SETTINGS.chargeback_log_sigma
+    clean_window_days: float = SETTINGS.clean_window_days
+    seed: int = SETTINGS.label_sim_seed
 
     def lag_days(self, transaction_id: int, *, is_fraud: bool) -> float:
         if not is_fraud:
