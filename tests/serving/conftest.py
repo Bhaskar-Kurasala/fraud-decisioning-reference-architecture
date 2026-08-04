@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from opentelemetry.trace import TracerProvider
 
 from fraudlens.serving.app import create_app
 from fraudlens.serving.runtime import CalibratedScorer, ModelUnavailableError
@@ -57,6 +58,7 @@ def make_client(
     elapsed: Callable[[], float] | None = None,
     writer: Any = None,
     model_version_pin: str | None = None,
+    tracer_provider: TracerProvider | None = None,
 ) -> TestClient:
     """A wired app. `scorer=None` with no probability override means the load fails."""
 
@@ -71,6 +73,11 @@ def make_client(
         clock=lambda: FROZEN_NOW,
         elapsed=elapsed if elapsed is not None else (lambda: 0.0),
         writer=writer,
+        # Defaults to None, which is the production default too: no provider means the
+        # OTel API hands back a non-recording tracer, so every test in this directory
+        # exercises the exact configuration a unit test would accidentally get wrong --
+        # one that exports nothing and opens nothing.
+        tracer_provider=tracer_provider,
     )
     return TestClient(app)
 
