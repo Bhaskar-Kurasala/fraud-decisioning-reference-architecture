@@ -1,15 +1,19 @@
-"""Test-only counterfactual replay: score -> action -> realised cost.
+"""Counterfactual replay for the gate tests: score -> action -> realised cost.
 
-This duplicates the four-action EV argmax from `research/05_economics.py` on
-purpose and temporarily. Its production home is `fraudlens.economics` /
-`fraudlens.policy`, which sit *above* `fraudlens.models` in the dependency order
-and are being built concurrently. The gate takes realised per-transaction costs
-as an input precisely so it never has to import them; this module is what
-supplies those costs to the regression test, and it should be deleted in favour
-of the real policy simulator once that lands.
+Routes a score through the *production* policy and cost model. This module exists
+only to shape the gate's inputs: `models` sits below `economics` in the import
+contract, so the gate takes per-transaction costs as arguments and never imports
+the policy itself. Tests are not bound by that layering, so the fixture can use
+the real definitions.
 
-Business constants are loaded from the repository's `config.py` rather than
-restated here — a copied constant is a constant that will drift.
+An earlier version reimplemented the EV argmax and the realised-cost arithmetic
+here, because `economics/` and `policy/` were being written concurrently. That
+duplication is gone. Reimplementing the policy from its description is what
+produced two separate corrections in this project already (see
+docs/findings/fit-balanced-empirical-result.md); a second copy living in the test
+suite would be the same mistake with a longer fuse, because it would let the
+gate's regression test keep passing against arithmetic the service no longer
+uses — the test would defend a policy nobody runs.
 """
 
 from __future__ import annotations
@@ -21,6 +25,9 @@ from types import ModuleType
 
 import numpy as np
 import numpy.typing as npt
+
+from fraudlens.economics.expected_value import realised_cost
+from fraudlens.policy.decisions import decide
 
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int_]
@@ -41,66 +48,34 @@ def load_root_config() -> ModuleType:
 
 @dataclass(frozen=True)
 class CostInputs:
-    """Per-transaction FN/FP costs and the intervention parameters."""
+    """Per-transaction false-negative and false-positive costs.
+
+    The intervention parameters (f_pass, a_abandon, q_analyst, c_review, d_delay)
+    are no longer carried here — they live in `fraudlens.config` and reach the
+    calculation through the production functions, so there is one place they can
+    be wrong. `tests/golden/test_config_parity.py` asserts those match the
+    research values.
+    """
 
     loss_fn: FloatArray  # L: Amount*COGS + chargeback fee + dispute ops
     loss_fp: FloatArray  # M: Amount*MARGIN + relationship cost
-    f_pass: float
-    a_abandon: float
-    q_analyst: float
-    c_review: float
-    d_delay: float
 
     @classmethod
-    def from_frame(cls, loss_fn: FloatArray, loss_fp: FloatArray, cfg: ModuleType) -> CostInputs:
-        return cls(
-            loss_fn=loss_fn,
-            loss_fp=loss_fp,
-            f_pass=cfg.F_PASS,
-            a_abandon=cfg.A_ABANDON,
-            q_analyst=cfg.Q_ANALYST,
-            c_review=cfg.C_REVIEW,
-            d_delay=cfg.D_DELAY,
-        )
-
-
-def ev_argmax_actions(p: FloatArray, cost: CostInputs) -> IntArray:
-    """Action per transaction: allow / challenge / review / deny, by EV argmax."""
-    fn, fp = cost.loss_fn, cost.loss_fp
-    expected_values = np.vstack(
-        [
-            -p * fn,
-            -(p * cost.f_pass * fn + (1 - p) * cost.a_abandon * fp),
-            -((1 - cost.q_analyst) * (p * fn + (1 - p) * fp) + cost.c_review + cost.d_delay),
-            -(1 - p) * fp,
-        ]
-    )
-    return np.asarray(expected_values.argmax(axis=0), dtype=np.int_)
-
-
-def realised_cost(actions: IntArray, y: IntArray, cost: CostInputs) -> FloatArray:
-    """Cost actually incurred, given the true label."""
-    fn, fp = cost.loss_fn, cost.loss_fp
-    out = np.zeros(len(y), dtype=np.float64)
-
-    allow = actions == 0
-    out[allow] = y[allow] * fn[allow]
-
-    chal = actions == 1
-    out[chal] = y[chal] * cost.f_pass * fn[chal] + (1 - y[chal]) * cost.a_abandon * fp[chal]
-
-    review = actions == 2
-    out[review] = (
-        (1 - cost.q_analyst) * (y[review] * fn[review] + (1 - y[review]) * fp[review])
-        + cost.c_review
-        + cost.d_delay
-    )
-
-    deny = actions == 3
-    out[deny] = (1 - y[deny]) * fp[deny]
-    return out
+    def from_frame(
+        cls, loss_fn: FloatArray, loss_fp: FloatArray, cfg: ModuleType | None = None
+    ) -> CostInputs:
+        """`cfg` is accepted and ignored; kept so callers need not change."""
+        del cfg
+        return cls(loss_fn=loss_fn, loss_fp=loss_fp)
 
 
 def replay(p: FloatArray, y: IntArray, cost: CostInputs) -> FloatArray:
-    """Per-transaction realised cost of routing `p` through the EV policy."""
-    return realised_cost(ev_argmax_actions(p, cost), y, cost)
+    """Per-transaction realised cost of routing `p` through the EV policy.
+
+    Four-action (review enabled) — the policy the published findings table
+    reports. The three-action variant costs $583/yr less on this window, which is
+    the measured value of offering analyst review, so the choice is stated rather
+    than defaulted (`decide` has no default for `include_review` for that reason).
+    """
+    actions = decide(p, cost.loss_fn, cost.loss_fp, include_review=True)
+    return realised_cost(actions, y, cost.loss_fn, cost.loss_fp)
