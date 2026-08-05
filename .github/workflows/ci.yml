@@ -58,3 +58,43 @@ jobs:
 
       - name: Golden-value tests (published findings)
         run: uv run pytest -m golden -v
+
+  # Separate job because it needs tools the quality job does not, and because its failure
+  # means something different: the library is fine and the thing that ships it is not.
+  #
+  # It deliberately does NOT run the integration or degradation drills. Those need the
+  # compose stack, a Postgres volume and a model artifact built from the git-ignored
+  # dataset, and a CI job that quietly skips half of what it claims to run is worse than
+  # one that does not claim it. They run locally; docs/operations/running-the-stack.md says
+  # how, and the numbers they produced are recorded there.
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv python install 3.10
+
+      - name: Install
+        run: uv sync --all-extras --dev
+
+      # Pinned. A validator that updates itself turns "the manifests changed" and "the
+      # schemas changed" into the same red build, and only one of those is our problem.
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      # The Dockerfile is the one artifact in this epic whose correctness cannot be asserted
+      # by reading it: a missing base digest, an extra that no longer resolves, or a wheel
+      # that started needing a compiler all look identical in review and all fail here.
+      - name: Build the scoring image
+        run: docker build -f deploy/docker/api.Dockerfile -t fraudlens/api:ci .
+
+      - name: Manifests, compose file and composition root
+        run: uv run pytest tests/deploy -m "not integration" -q
