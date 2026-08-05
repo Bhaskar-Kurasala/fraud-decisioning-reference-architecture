@@ -233,6 +233,42 @@ measured figure); staying that way is currently a matter of discipline.
 findings document. Cheap, but it needs the findings doc to carry anchors, which is
 outside this epic's scope.
 
+### Gap 10 — human adjudications had no label provenance — **CLOSED**
+
+*Closed by E12c. Kept here rather than deleted, because the failure mode it
+prevents is not obvious.*
+
+`revealed_labels` held one label per transaction, keyed on `transaction_id`,
+arriving via chargeback at a 34-day median. But humans also adjudicate
+transactions — dispute handlers, representment, and the small audit queue E12b
+priced as a control-chart instrument. Those adjudications are labels too, and
+they arrive ~90 days before the chargeback they may or may not prevent.
+
+Without provenance, the two would mix silently. A human "fraud" call is an
+*opinion* correct at q=0.91 and drawn from a censored sample above the decision
+boundary; a chargeback is an *outcome*. Mixing them in training changes the
+sampling distribution of the training set; mixing them in the promotion gate
+compares challenger cost on rows whose labels carry 9% error against rows whose
+labels carry none. Both are silent corruptions, and both are directional — the
+human label biases toward the opinion, which in the censored region is always
+more suspicious than the population.
+
+**Closed by** a separate `human_adjudications` table (same reasoning as
+`shadow_scores`: mixing two kinds of observation in one table means every
+consumer has to remember to filter, and the one that forgets corrupts
+silently). The default training/promotion path reads `revealed_labels` and
+structurally cannot see human labels. Including them is an explicit opt-in
+through `effective_labels(..., include_human=True)`, which tags every label
+with its origin so the consumer can still tell them apart.
+
+The reconciliation rule: **chargeback wins when both exist.** The outcome is
+ground truth; the opinion was an early guess. The disagreement is recorded —
+it is the control-chart signal. The prevented-loss case (human says "fraud",
+no chargeback arrives because the decline worked) is left as `origin=HUMAN`,
+excluded from training, because it cannot be distinguished from a false
+positive and assuming it is always a prevented loss would inflate the fraud
+rate by the analyst false-positive rate.
+
 ---
 
 ## 5. What an auditor can and cannot be told
@@ -250,6 +286,9 @@ outside this epic's scope.
 - For the champion model: its measured performance, the windows it was trained,
   calibrated and evaluated on, and the commit, config and data checksum behind the card —
   including when one of those pins was missing.
+- That every label feeding training or the promotion gate is a chargeback outcome, not a
+  human opinion, and that the two label sources are separated by table not by convention
+  (gap 10, closed).
 
 **Cannot be told, today:**
 
