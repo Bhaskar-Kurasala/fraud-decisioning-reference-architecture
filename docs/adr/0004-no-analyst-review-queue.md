@@ -115,8 +115,16 @@ because it tells them what they can and cannot put in a letter.
 **What we have that is better than SHAP for this system:** the decision boundary
 is an explicit economic function of amount and tenure, so the counterfactual is
 *solvable* rather than approximable. We can state the exact amount at which the
-action would flip — *"at $200 rather than $2,000 the break-even would have been
-0.731 rather than 0.369, and this transaction would have been allowed"*. A
+action would flip — *"the challenge/deny threshold is 0.890 at $250.00 and would
+have been 0.900 at $197.94, so below that amount this would have been challenge
+rather than deny"*.
+
+The threshold named there is deliberately the one that moves, not the published
+0.740/0.369 break-even. Those are the *binary* allow-vs-deny anchors, and with
+the challenge arm present they are not what anything crosses — the real deny
+boundary sits at 0.81–0.92. Quoting the published number beside a flip is true
+and misleading in the ADR-0003 sense, and it survived into the first
+implementation of this endpoint before the oracle caught it. A
 perturbation method would sample its way toward an answer we can compute in
 closed form. This is a genuine advantage of deriving the policy from economics
 rather than fitting a threshold, and it only exists because the boundary is not a
