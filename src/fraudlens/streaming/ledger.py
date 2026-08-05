@@ -101,7 +101,19 @@ class DecisionLedger:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
-        self._stmt = insert_ignoring_duplicates(engine, decision_ledger)
+        # RETURNING, not rowcount. `ON CONFLICT DO NOTHING` gives psycopg3 a rowcount of
+        # -1 for a fresh insert *and* for a conflict, so `bool(rowcount)` reports True in
+        # both cases — the duplicate signal is not merely unreliable on Postgres, it is
+        # inverted-broken, and it happens to work on SQLite, which is where the default
+        # suite runs. Found by the E10 degradation drill, which was the first thing to
+        # exercise this against a real Postgres.
+        #
+        # With RETURNING the answer comes from the database rather than from a driver
+        # convention: a conflicting row is not inserted, so it returns nothing. One
+        # behaviour, both engines, no dialect branch to keep in sync.
+        self._stmt = insert_ignoring_duplicates(engine, decision_ledger).returning(
+            decision_ledger.c.transaction_id
+        )
 
     def record(self, decision: DecisionRecord) -> bool:
         """Write one decision. Returns True if it was new, False if a duplicate.
@@ -112,20 +124,22 @@ class DecisionLedger:
         and a genuinely new decision look different to the caller.
         """
         with self._engine.begin() as conn:
-            result = conn.execute(self._stmt, decision.as_row())
-        return bool(result.rowcount)
+            returned = conn.execute(self._stmt, decision.as_row()).fetchall()
+        return len(returned) == 1
 
     def record_many(self, decisions: Sequence[DecisionRecord]) -> int:
-        """Write a batch, skipping duplicates. Returns the number newly written."""
+        """Write a batch, skipping duplicates. Returns the number newly written.
+
+        Counts the rows the insert actually returned. The previous implementation took
+        the difference of two `count()` calls around the write, which needed the ledger
+        to be otherwise idle to be correct — under the concurrent writers this is built
+        for, a second producer's rows would be attributed to this batch.
+        """
         if not decisions:
             return 0
         rows = [d.as_row() for d in decisions]
-        before = self.count()
         with self._engine.begin() as conn:
-            conn.execute(self._stmt, rows)
-        # executemany does not report a trustworthy rowcount with ON CONFLICT on
-        # either driver, so the count difference is the honest measure.
-        return self.count() - before
+            return len(conn.execute(self._stmt, rows).fetchall())
 
     def get(self, transaction_id: int) -> DecisionRecord | None:
         stmt = select(decision_ledger).where(decision_ledger.c.transaction_id == transaction_id)
