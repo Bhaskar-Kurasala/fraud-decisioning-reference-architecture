@@ -22,6 +22,7 @@ from opentelemetry.trace import Tracer, TracerProvider
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from fraudlens.serving.audit import persist
+from fraudlens.serving.case_view import register_case_view
 from fraudlens.serving.cases import register_case_routes
 from fraudlens.serving.contracts import (
     DecideRequest,
@@ -244,6 +245,10 @@ def _register_routes(
     # ledger through its own dependency and is off the §4.3 budget, so it must not add an
     # argument to the constructor of the path that has one.
     register_case_routes(app)
+    # The same case, rendered for a human, sharing the same ledger dependency. Registered
+    # beside the JSON route rather than served as a static file from a sidecar: an
+    # air-gapped estate should not need a second container to read one decision.
+    register_case_view(app)
 
 
 def _latency_report(timings: StageTimings) -> LatencyReport:
