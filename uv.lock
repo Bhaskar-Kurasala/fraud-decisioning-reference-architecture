@@ -1061,6 +1061,7 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 serving = [
@@ -1104,6 +1105,7 @@ requires-dist = [
     { name = "pydantic-settings", marker = "extra == 'serving'", specifier = ">=2.6.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.0" },
     { name = "scikit-learn", specifier = "==1.7.2" },
     { name = "sqlalchemy", marker = "extra == 'streaming'", specifier = ">=2.0.0" },
