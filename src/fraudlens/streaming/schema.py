@@ -147,7 +147,34 @@ revealed_labels = Table(
     Index("ix_revealed_labels_revealed_at", "revealed_at"),
 )
 
-_TABLES: tuple[str, ...] = ("decision_ledger", "revealed_labels")
+# Human adjudications — an opinion, not an outcome. Separate from
+# ``revealed_labels`` for the same reason ``shadow_scores`` is separate from
+# ``decision_ledger``: mixing two different kinds of observation in one table
+# means every consumer has to remember to filter, and the one that forgets
+# silently corrupts the training set (E12c). ``revealed_labels`` has
+# ``transaction_id`` as a sole primary key, so the two cannot share a table
+# in any case — a human label arrives ~90 days before its chargeback.
+#
+# Composite key on (transaction_id, adjudicator): the same person does not
+# adjudicate the same transaction twice, but a second opinion is a real thing
+# and is a new row, not an edit.
+human_adjudications = Table(
+    "human_adjudications",
+    metadata,
+    Column(
+        "transaction_id",
+        BigInteger,
+        ForeignKey("decision_ledger.transaction_id"),
+        primary_key=True,
+        autoincrement=False,
+    ),
+    Column("is_fraud", Boolean, nullable=False),
+    Column("adjudicated_at", UtcDateTime, nullable=False),
+    Column("adjudicator", Text, primary_key=True),
+    Index("ix_human_adjudications_adjudicated_at", "adjudicated_at"),
+)
+
+_TABLES: tuple[str, ...] = ("decision_ledger", "revealed_labels", "human_adjudications")
 
 
 def insert_ignoring_duplicates(engine: Engine, table: Table) -> Insert:
@@ -155,17 +182,19 @@ def insert_ignoring_duplicates(engine: Engine, table: Table) -> Insert:
 
     DO NOTHING rather than DO UPDATE: an upsert is an UPDATE, which the
     append-only trigger rejects — rightly, since re-emitting a transaction must
-    be a no-op, not a rewrite of history. Both tables are keyed on
-    transaction_id, so the primary key is the idempotency key.
+    be a no-op, not a rewrite of history. The conflict target is the table's
+    primary key columns, so this works for both single-column (``transaction_id``)
+    and composite (``transaction_id, adjudicator``) keys.
     """
+    pk = [c.name for c in table.primary_key.columns]
     if engine.dialect.name == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        return pg_insert(table).on_conflict_do_nothing(index_elements=["transaction_id"])
+        return pg_insert(table).on_conflict_do_nothing(index_elements=pk)
     if engine.dialect.name == "sqlite":
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-        return sqlite_insert(table).on_conflict_do_nothing(index_elements=["transaction_id"])
+        return sqlite_insert(table).on_conflict_do_nothing(index_elements=pk)
     raise ValueError(f"unsupported dialect {engine.dialect.name!r}")
 
 
