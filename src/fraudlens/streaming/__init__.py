@@ -7,9 +7,15 @@ them, so this package does not import the model or policy layers.
 
 from fraudlens.streaming.labels import (
     DisputeLagModel,
+    EffectiveLabel,
+    HumanAdjudication,
+    LabelOrigin,
     LabelRevealer,
     PendingLabel,
     RevealedLabel,
+    effective_labels,
+    reconcile,
+    record_adjudication,
 )
 from fraudlens.streaming.ledger import DecisionLedger, DecisionRecord
 from fraudlens.streaming.migrate import migrate
@@ -19,11 +25,17 @@ __all__ = [
     "DecisionLedger",
     "DecisionRecord",
     "DisputeLagModel",
+    "EffectiveLabel",
+    "HumanAdjudication",
+    "LabelOrigin",
     "LabelRevealer",
     "PendingLabel",
     "ReplayCheckpoint",
     "ReplayEvent",
     "ReplayProducer",
     "RevealedLabel",
+    "effective_labels",
     "migrate",
+    "reconcile",
+    "record_adjudication",
 ]
