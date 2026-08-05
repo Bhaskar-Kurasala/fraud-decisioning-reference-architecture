@@ -22,6 +22,7 @@ from opentelemetry.trace import Tracer, TracerProvider
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from fraudlens.serving.audit import persist
+from fraudlens.serving.cases import register_case_routes
 from fraudlens.serving.contracts import (
     DecideRequest,
     DecideResponse,
@@ -239,6 +240,10 @@ def _register_routes(
 
     register_request_counter(app)
     register_failsafe_handler(app)
+    # The investigation view (E12). Takes no state from here on purpose: it reads the
+    # ledger through its own dependency and is off the §4.3 budget, so it must not add an
+    # argument to the constructor of the path that has one.
+    register_case_routes(app)
 
 
 def _latency_report(timings: StageTimings) -> LatencyReport:
