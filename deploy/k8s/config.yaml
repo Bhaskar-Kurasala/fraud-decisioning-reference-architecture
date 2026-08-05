@@ -1,0 +1,51 @@
+# Configuration and credential, separated because they have different lifecycles and
+# different blast radii. The ConfigMap is readable by anyone who can read the namespace and
+# every value in it is safe to paste into an incident channel; the Secret holds the one
+# string that is not.
+#
+# The split is not cosmetic here. `FRAUDLENS_MODEL_VERSION` is the pin that makes a decision
+# reproducible, and it is the value most likely to be edited during an incident ("roll back
+# to v6"). Keeping it in a ConfigMap means that edit is a reviewable diff rather than an
+# opaque base64 blob, and `kubectl describe` shows what the service is running without
+# anyone needing decrypt rights.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraudlens-api
+  labels:
+    app.kubernetes.io/name: fraudlens
+    app.kubernetes.io/component: scoring
+data:
+  # Empty means "no bundle mounted, use the registry". Present and unreadable means the
+  # service comes up not-ready and fail-safe — see the readiness probe in api.yaml.
+  FRAUDLENS_MODEL_BUNDLE: ""
+  MLFLOW_TRACKING_URI: "http://mlflow:5000"
+  FRAUDLENS_MODEL_NAME: "fraudlens-fraud-score"
+  # The version pin. Empty resolves to whatever is in Production *at pod start*, which is
+  # then recorded on every decision. Set it explicitly before a replay: an unpinned replay
+  # of last Tuesday's traffic is silently decided by this Tuesday's model and the resulting
+  # ledger cannot be reproduced.
+  FRAUDLENS_MODEL_VERSION: ""
+  TZ: "UTC"
+
+---
+# Demo credential, committed deliberately and marked as such. The real posture is that this
+# object is created by whatever holds the secret (an external secret operator, a CI job)
+# and this file documents the *shape* the deployment expects. ADR-0002 records that the
+# system never touches a PAN — PCI scope is avoided by design — so the blast radius of this
+# database is decision metadata, not card data. That is what makes committing a local
+# password a documentation choice rather than a security incident.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fraudlens-api
+  labels:
+    app.kubernetes.io/name: fraudlens
+    app.kubernetes.io/component: scoring
+type: Opaque
+stringData:
+  # The whole URL, not a password fragment. A DSN split across a ConfigMap and a Secret has
+  # to be reassembled somewhere, and the reassembly is invariably a shell expansion in an
+  # entrypoint — at which point the password is in the process table.
+  FRAUDLENS_DATABASE_URL: "postgresql+psycopg://fraudlens:fraudlens@postgres:5432/fraudlens"

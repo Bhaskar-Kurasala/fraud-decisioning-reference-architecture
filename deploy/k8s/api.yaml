@@ -1,0 +1,194 @@
+# The scoring service. Authored and validated statically (design spec §1.2); no cluster
+# was available and none of this has been applied. The value of writing it anyway is that
+# the probe semantics and the resource envelope are deployment *decisions*, and they are
+# the two that a Compose file cannot express and that get made badly under time pressure.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraudlens-api
+  labels:
+    app.kubernetes.io/name: fraudlens
+    app.kubernetes.io/component: scoring
+spec:
+  # Two, not one and not an autoscaler. ADR-0002 declines horizontal autoscaling by name:
+  # the service is built stateless so that it *can* scale, and running an autoscaler
+  # against a replayed stream would demonstrate nothing. Two is the smallest number that
+  # makes the PodDisruptionBudget in pdb.yaml mean something — with one replica a PDB
+  # either blocks every node drain forever or permits a full outage, and neither is a
+  # policy.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fraudlens
+      app.kubernetes.io/component: scoring
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than we started with. A decline is an adverse action and a 503 in
+      # a checkout integration is frequently retried or, worse, failed open at the caller —
+      # so a rollout must add capacity before it removes any.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fraudlens
+        app.kubernetes.io/component: scoring
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # The pod must finish the decisions it has already accepted. 30 s is well above the
+      # 150 ms budget; the surplus is for the preStop sleep below.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          # Placeholder. There is no registry to push to here, so this is the tag Compose
+          # builds locally. Replacing it with an immutable digest is a deploy-time
+          # requirement, not a nicety: with a floating tag two pods in the same ReplicaSet
+          # can be running different artifacts, and the ledger's model_version would be the
+          # only evidence of it — after the fact.
+          image: fraudlens/api:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: fraudlens-api
+            - secretRef:
+                name: fraudlens-api
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # readOnlyRootFilesystem is only enforceable if the writable paths are named.
+            # Nothing on the request path writes to disk; this exists because CPython and
+            # a few libraries expect a writable temp dir at import.
+            - name: tmp
+              mountPath: /tmp
+
+          # ---- probes -------------------------------------------------------------------
+          # The three probes answer three different questions and are wired to two different
+          # endpoints on purpose. Aliasing liveness to readiness is the classic way to turn a
+          # model outage into a checkout outage, and it is the specific mistake this block
+          # exists to prevent.
+
+          # "Has it finished starting?" Model load happens once in the lifespan hook before
+          # uvicorn accepts connections. A load slow enough to trip a liveness probe gets the
+          # pod killed and retried forever, which from outside is indistinguishable from a
+          # crash loop — so startup gets its own budget (30 x 5 s = 150 s) and liveness does
+          # not begin until it passes.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+
+          # "Is the process able to answer at all?" Never consults the model. A pod serving
+          # correct fail-safe decisions is alive, and restarting it does not produce a model.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # "Should the load balancer prefer this instance?" 503 while the model is missing,
+          # so traffic drains to a pod that can produce a scored decision, while the pod keeps
+          # answering /v1/decide fail-safe the whole time.
+          #
+          # The tension, stated rather than hidden: if *every* pod is not-ready the Service
+          # has no endpoints and callers get a connection failure — which converts
+          # "degraded but answering" into "unreachable" at exactly the moment the fail-safe
+          # ladder was built for. A model artifact is a shared dependency, so fleet-wide is
+          # the likely shape of that failure, not the unlikely one. `publishNotReadyAddresses:
+          # true` on the Service would fix it and is deliberately not set: it would also
+          # disable endpoint draining during a rollout, trading a rare failure for one that
+          # happens on every deploy. The resolution taken instead is that the *caller* must
+          # treat a scoring timeout as a decline-or-challenge rather than an approve, which
+          # is a contract this repository can state and cannot enforce. It is recorded in
+          # docs/operations/running-the-stack.md as an open item, not solved here.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            # One failure is enough. Unlike liveness, being wrong here is cheap: a pod
+            # removed from the endpoint list is still serving and still recovering.
+            failureThreshold: 1
+            successThreshold: 1
+
+          lifecycle:
+            preStop:
+              exec:
+                # Endpoint removal and pod termination are concurrent, not ordered. Without
+                # this pause the kubelet can SIGTERM the process while kube-proxy is still
+                # sending it traffic, and the caller sees connection resets that look like
+                # our error rate rather than like a deploy.
+                command: ["sleep", "5"]
+
+          # ---- resources ----------------------------------------------------------------
+          # Derived from §4.3 and from measurement, not guessed.
+          #
+          # Memory: 135 MB resident with numpy/pandas/scikit-learn/SQLAlchemy imported and
+          # the app constructed, measured on this machine. The request is 256Mi to leave
+          # room for the artifact; the limit is 768Mi so a champion pickle of a few hundred
+          # MB does not OOMKill the checkout path, while still being tight enough that a
+          # leak surfaces in days rather than never. Request != limit is deliberate: this is
+          # not a Guaranteed-QoS workload and pretending otherwise would evict something else.
+          #
+          # CPU: the load test (scripts/load_test.py) saturates at ~220 decisions/s on one
+          # event loop, so a decision costs roughly 4.5 ms of CPU including the generator
+          # sharing the loop — call it 2-3 ms for the server alone, before real inference.
+          # At the 10 RPS steady state derived from the blueprint's volume assumption that
+          # is ~0.03 CPU, so 250m of request is ~8x headroom for burst.
+          #
+          # The limit is a full core, and the reason is the SLO rather than the throughput.
+          # CFS throttling quantises at 100 ms. A limit below one core means a single
+          # in-flight decision that wants more than its share within a period is *stalled
+          # until the next one* — a stall of up to 100 ms against a 150 ms p99 budget, from
+          # a limit that looks generous on an average-utilisation graph. The tail is the SLO
+          # (ADR-0002 #3), so the limit is set where a single request cannot be throttled.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fraudlens-api
+  labels:
+    app.kubernetes.io/name: fraudlens
+    app.kubernetes.io/component: scoring
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: fraudlens
+    app.kubernetes.io/component: scoring
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
