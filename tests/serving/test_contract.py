@@ -78,7 +78,7 @@ def test_the_action_vocabulary_is_the_three_action_policy() -> None:
     approve with extra steps."""
     action = DecideResponse.model_json_schema()["properties"]["action"]
     assert action["enum"] == ["allow", "challenge", "deny"]
-    assert POLICY_VERSION == "ev-argmax-3action-v1"
+    assert POLICY_VERSION == "ev-argmax-3action-v1+rules-ladder-v1"
 
 
 @pytest.mark.parametrize(

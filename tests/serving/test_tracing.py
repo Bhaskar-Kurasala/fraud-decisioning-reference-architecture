@@ -94,7 +94,7 @@ def test_every_span_carries_the_lineage_needed_to_blame_an_artifact() -> None:
     for span in finished:
         attributes = dict(span.attributes or {})
         assert attributes["fraudlens.model_version"] == "champion-v7"
-        assert attributes["fraudlens.policy_version"] == "ev-argmax-3action-v1"
+        assert attributes["fraudlens.policy_version"] == "ev-argmax-3action-v1+rules-ladder-v1"
         assert attributes["fraudlens.feature_version"] == "request-supplied-v1"
         assert attributes["fraudlens.degraded"] is False
         assert attributes["fraudlens.transaction_id"] == request_body()["transaction_id"]

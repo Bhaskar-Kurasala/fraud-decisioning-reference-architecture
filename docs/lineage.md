@@ -113,21 +113,41 @@ label someone chose, not of an artifact.
 scorer. One column, one migration, one field on the `CalibratedScorer` protocol. This is
 the cheapest high-value item on this list and should be done first.
 
-### Gap 2 — degraded decisions cannot be replayed at all
+### Gap 2 — degraded decisions cannot be replayed at all — **CLOSED**
 
-The fail-safe rule ladder lives in `serving.decisioning`, which sits *above* `lineage` in
-the import contract, so `replay` cannot call it. Reimplementing it from its prose is
-exactly the mistake that has already cost this project two corrections ($71,545/yr and
-$583/yr), so it is not reimplemented. Degraded rows are reported unreplayable, with the
-reason.
+*Closed after this document was first written. Kept here rather than deleted, because the
+reason it existed is more instructive than the fix.*
 
-The consequence is worst precisely when it matters most: an outage is when the largest
-block of unusual decisions is made, and that block is the least reconstructable.
+The fail-safe rule ladder lived in `serving.decisioning`, which sits *above* `lineage` in
+the import contract, so `replay` could not call it — and reimplementing it from its prose
+is exactly the mistake that has already cost this project two corrections ($71,545/yr and
+$583/yr). So degraded rows were reported unreplayable.
 
-**Cost to close:** move the ladder down into `policy` (it is ~15 lines and depends only
-on amount and tenure) and give it its own version string. Both `serving` and `lineage`
-then call one definition, and replay covers 100% of rows. Small change, real benefit;
-the reason it is not done here is that `serving/` is outside this epic's scope.
+The consequence was worst precisely where it mattered most. An outage is when the largest
+block of unusual decisions gets made, it is the block a regulator asks about first, and it
+was the one block nobody could later prove was decided correctly. Note that this was not
+an oversight in the ladder — it was a consequence of where the *layers* were drawn, which
+is the kind of defect that is invisible until something downstream tries to use the layer
+below.
+
+**Closed by** moving the ladder into `policy.fallback` with its own version string
+(`rules-ladder-v1`), which both `serving` and `lineage` now call. `POLICY_VERSION` names
+both policies the deployment can decide under — `ev-argmax-3action-v1+rules-ladder-v1` —
+because the ledger has one column to say which arithmetic applied and a scored row and a
+degraded row did not come from the same one.
+
+Two things fell out of the move that were not the point of it:
+
+- `serving.reasons` had its own `_HIGH_AMOUNT = 500.0` beside a comment claiming the
+  amount bands "carry no money — moving them changes what a dispute letter says, not what
+  we decide". That was false: the same threshold is the deny rung of the ladder. The band
+  now takes its value from `policy.fallback`, so the dispute letter's notion of "high
+  amount" is necessarily the one the ladder acted on.
+- The `FALLBACK_RULE_*` reason codes now take their string values from the policy module
+  that owns the rungs, rather than being a second set of literals that agree until someone
+  edits one.
+
+Replay now covers 100% of ledger rows.
 
 ### Gap 3 — `config_hash` proves *different*, never *what*
 
@@ -221,7 +241,9 @@ outside this epic's scope.
 
 - Every decision this service made, once, in an append-only table, with its action, its
   reason codes and the calibrated probability it was derived from.
-- Whether a model or the fail-safe ladder produced it, and why the ladder ran.
+- Whether a model or the fail-safe ladder produced it, and why the ladder ran — and for
+  ladder decisions, that the recorded action falls out of the recorded request through the
+  same ladder the service ran, on every rung (gap 2, closed).
 - That the recorded action falls out of the recorded probability, the original request
   and the recorded config — mechanically, by test, on every arm of the policy.
 - Whether the business config in force at decision time differs from today's.
@@ -233,7 +255,6 @@ outside this epic's scope.
 
 - That a specific set of weights produced a specific score (gap 1).
 - What the config was, as opposed to whether it changed (gap 3).
-- Anything reconstructive about a decision made during a model outage (gap 2).
 - That no privileged operator altered the ledger (gap 5).
 - Where a published research figure came from, at the level of a commit and a data
   checksum (gap 6), and in one case at all (gap 7).

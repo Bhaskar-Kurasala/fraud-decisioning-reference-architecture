@@ -21,13 +21,20 @@ from __future__ import annotations
 from enum import Enum
 
 from fraudlens.config import UNKNOWN_TENURE
+from fraudlens.policy import fallback
 
-# Amount bands, for explanation only. The decision boundary is per-transaction and
-# continuous (`policy.boundaries`); these are the coarse buckets a human reads. The
-# split points are where the break-even inversion is most visible: 0.740 at the low end
-# versus 0.369 for $500+ baskets. BUSINESS ASSUMPTION: the bands are presentational and
-# carry no money -- moving them changes what a dispute letter says, not what we decide.
-_HIGH_AMOUNT = 500.0
+# Amount bands, for explanation only on the scored path: the decision boundary there is
+# per-transaction and continuous (`policy.boundaries`) and these are the coarse buckets a
+# human reads. The split points are where the break-even inversion is most visible, 0.740
+# at the low end against 0.369 for $500+ baskets.
+#
+# The high band takes its value from `policy.fallback` rather than restating 500.0. An
+# earlier version of this comment claimed the bands "carry no money -- moving them changes
+# what a dispute letter says, not what we decide", and that was wrong: the same threshold
+# is the deny rung of the degraded ladder, where it decides. Importing it keeps the
+# dispute letter's notion of "high amount" identical to the one the ladder acted on, which
+# is the only version of this that survives a customer asking why.
+_HIGH_AMOUNT = fallback.FALLBACK_HIGH_AMOUNT
 _LOW_AMOUNT = 20.0
 
 # Tenure buckets whose relationship cost dominates the false-positive term, which is why
@@ -60,9 +67,11 @@ class ReasonCode(str, Enum):
     DEGRADED_MODEL_UNAVAILABLE = "DEGRADED_MODEL_UNAVAILABLE"
     DEGRADED_SCORING_ERROR = "DEGRADED_SCORING_ERROR"
 
-    # --- which rung of the documented fallback ladder fired (see `decisioning`).
-    FALLBACK_RULE_HIGH_AMOUNT_NEW_ACCOUNT = "FALLBACK_RULE_HIGH_AMOUNT_NEW_ACCOUNT"
-    FALLBACK_RULE_DEFAULT_CHALLENGE = "FALLBACK_RULE_DEFAULT_CHALLENGE"
+    # --- which rung of the fallback ladder fired. Values come from `policy.fallback`,
+    # which owns the ladder: the rung that fired and the code that reports it must be the
+    # same string, and two literals that agree today are two literals that can diverge.
+    FALLBACK_RULE_HIGH_AMOUNT_NEW_ACCOUNT = fallback.RULE_HIGH_AMOUNT_NEW_ACCOUNT
+    FALLBACK_RULE_DEFAULT_CHALLENGE = fallback.RULE_DEFAULT_CHALLENGE
 
 
 def score_band_reason(
@@ -101,15 +110,3 @@ def context_reasons(amount: float, tenure: str) -> list[ReasonCode]:
     elif tenure in _ESTABLISHED_TENURES:
         codes.append(ReasonCode.ESTABLISHED_ACCOUNT_TENURE)
     return codes
-
-
-def is_high_amount_new_account(amount: float, days_since_first_seen: float | None) -> bool:
-    """The one escalation in the degraded ladder: big basket, account we have never seen.
-
-    Uses the raw request fields rather than the bucketed tenure on purpose -- in degraded
-    mode the feature stage may be exactly what failed, so the fallback must not depend on
-    it. A missing tenure signal counts as new: we cannot show the account is established.
-    """
-    if amount < _HIGH_AMOUNT:
-        return False
-    return days_since_first_seen is None or days_since_first_seen <= 7.0

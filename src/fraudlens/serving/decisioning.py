@@ -45,14 +45,13 @@ from fraudlens.economics import (
     tenure_bucket,
 )
 from fraudlens.models.provenance import config_hash
-from fraudlens.policy import boundaries, decide
+from fraudlens.policy import FALLBACK_VERSION, boundaries, decide, decide_without_model
 from fraudlens.serving.contracts import DecideRequest
 from fraudlens.serving.latency import CALIBRATION_POLICY, FEATURES, INFERENCE, StageTimings
 from fraudlens.serving.metrics import DEGRADATIONS
 from fraudlens.serving.reasons import (
     ReasonCode,
     context_reasons,
-    is_high_amount_new_account,
     score_band_reason,
 )
 from fraudlens.serving.runtime import CalibratedScorer
@@ -71,7 +70,13 @@ logger = logging.getLogger(__name__)
 # excluding it here also happens to be the cheaper of the two. `policy.queue.rank_for_review`
 # serves the offline path that can honour a capacity constraint.
 INCLUDE_REVIEW: Final = False
-POLICY_VERSION: Final = "ev-argmax-3action-v1"
+
+# Names BOTH policies this deployment can decide under, because it can decide under either
+# and the ledger has one column to say which. A scored decision came from the EV argmax; a
+# degraded one came from the rule ladder; a replay months later has to know which
+# arithmetic to re-run, and "ev-argmax-3action-v1" alone would silently claim the argmax
+# priced a decision no model ever saw.
+POLICY_VERSION: Final = f"ev-argmax-3action-v1+{FALLBACK_VERSION}"
 
 # There is no feature store in this deployment; the caller assembles the vector and this
 # string versions that contract. It is not a pipeline version and must not be read as one.
@@ -190,12 +195,16 @@ def _explain(
 
 
 def _fallback(request: DecideRequest, cause: ReasonCode) -> Outcome:
-    """The rule ladder. Never returns `allow` -- that invariant is what this file is for."""
+    """Route to the rule ladder and record why we are on it.
+
+    The ladder itself is `policy.decide_without_model`. It moved there so that
+    `lineage.replay`, which sits below serving in the import contract, can reconstruct a
+    degraded decision — an outage produces the largest block of unusual decisions in the
+    system's history, and while the ladder lived here that block was the one block nobody
+    could later prove was decided correctly.
+    """
     DEGRADATIONS.labels(reason=cause.value).inc()
-    if is_high_amount_new_account(request.amount, request.days_since_first_seen):
-        action, rule = "deny", ReasonCode.FALLBACK_RULE_HIGH_AMOUNT_NEW_ACCOUNT
-    else:
-        action, rule = "challenge", ReasonCode.FALLBACK_RULE_DEFAULT_CHALLENGE
+    action, rule = decide_without_model(request.amount, request.days_since_first_seen)
     return Outcome(
         action=action,
         # Null rather than a number, for both. There is no score; publishing a
@@ -204,7 +213,7 @@ def _fallback(request: DecideRequest, cause: ReasonCode) -> Outcome:
         # reads as "confidently legitimate".
         raw_score=None,
         calibrated_probability=None,
-        reason_codes=(cause.value, rule.value),
+        reason_codes=(cause.value, rule),
         degraded=True,
         degraded_reason=cause.value,
     )

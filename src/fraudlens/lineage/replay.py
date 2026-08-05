@@ -47,7 +47,7 @@ from fraudlens.economics import (
     tenure_bucket,
 )
 from fraudlens.models.provenance import config_hash
-from fraudlens.policy import decide
+from fraudlens.policy import FALLBACK_VERSION, decide, decide_without_model
 from fraudlens.streaming.ledger import DecisionRecord
 
 # policy_version -> whether that policy offered the analyst-review arm.
@@ -61,7 +61,9 @@ from fraudlens.streaming.ledger import DecisionRecord
 # `tests/lineage/test_replay.py::test_serving_policy_version_is_registered` fails if
 # serving's POLICY_VERSION drifts from this table, which is what stops the table from
 # becoming a stale second opinion about what the service runs.
-POLICY_VARIANTS: Mapping[str, bool] = MappingProxyType({"ev-argmax-3action-v1": False})
+POLICY_VARIANTS: Mapping[str, bool] = MappingProxyType(
+    {f"ev-argmax-3action-v1+{FALLBACK_VERSION}": False}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +153,27 @@ def replay_decision(
     if reason is not None:
         return _refused(record, reason, input_matches, config_matches)
 
+    if record.degraded:
+        # The rule ladder, re-run rather than re-described. It used to live in
+        # `serving.decisioning`, above this layer, which made degraded rows the one
+        # category of decision nobody could later prove was made correctly — worst
+        # possible placement, since an outage produces the largest single block of them.
+        # `policy.decide_without_model` is now the one definition and this calls it.
+        action, _rule = decide_without_model(
+            float(payload["amount"]), _optional_float(payload.get("days_since_first_seen"))
+        )
+        return ReplayResult(
+            transaction_id=record.transaction_id,
+            recorded_action=record.action,
+            replayed_action=action,
+            input_matches=input_matches,
+            # The ladder reads no business constants, so a config change cannot have moved
+            # it. Reported as matching to keep the field's meaning uniform across rows:
+            # "the arithmetic that produced this action is unchanged".
+            config_matches=True,
+            unreplayable_reason=None,
+        )
+
     probability = record.calibrated_probability
     if probability is None:
         # Unreachable through the ledger, whose CHECK constraint makes a null probability
@@ -207,15 +230,6 @@ def _unreplayable_reason(record: DecisionRecord, payload: Mapping[str, Any]) -> 
     Each branch is a known limit of the audit trail rather than a defensive check, and
     each is listed in docs/lineage.md with the cost of closing it.
     """
-    if record.degraded:
-        # The fail-safe rule ladder lives in `serving.decisioning`, above this layer in
-        # the import contract, so it cannot be called from here — and reimplementing it
-        # from its prose is exactly the mistake that has already cost this project two
-        # corrections. Closing this means moving the ladder down to `policy`.
-        return (
-            "degraded decision: produced by the serving fail-safe ladder, which sits above "
-            "the lineage layer and has no importable definition here"
-        )
     if record.policy_version not in POLICY_VARIANTS:
         return (
             f"unknown policy_version {record.policy_version!r}; this build cannot say what "
@@ -224,3 +238,10 @@ def _unreplayable_reason(record: DecisionRecord, payload: Mapping[str, Any]) -> 
     if "amount" not in payload:
         return "supplied payload has no `amount`; it is not a /v1/decide request body"
     return None
+
+
+def _optional_float(value: Any) -> float | None:
+    """None stays None. On the degraded path that is load-bearing: a missing tenure
+    signal means the ladder treats the account as new, and coercing it to 0.0 would
+    reach the same verdict for the wrong reason."""
+    return None if value is None else float(value)

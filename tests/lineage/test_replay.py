@@ -143,21 +143,56 @@ def test_replaying_under_the_recorded_config_still_matches(
     assert result.verified
 
 
-def test_a_degraded_decision_is_reported_unreplayable_not_matched(engine: Engine) -> None:
-    """The fail-safe ladder lives above this layer, so it cannot be re-derived here.
+@pytest.mark.parametrize(
+    ("amount", "days_since_first_seen", "expected"),
+    [
+        (249.99, 3.0, "challenge"),  # default rung
+        (1500.0, 2.0, "deny"),  # big basket, account we have never seen
+        (1500.0, None, "deny"),  # missing tenure counts as new, not as established
+        (1500.0, 400.0, "challenge"),  # big basket, but a relationship to protect
+    ],
+)
+def test_a_degraded_decision_replays_through_the_same_ladder(
+    engine: Engine, amount: float, days_since_first_seen: float | None, expected: str
+) -> None:
+    """Every rung of the fail-safe ladder, re-derived from the ledger row.
 
-    Reported as a limit rather than glossed: a degraded row silently marked "matched"
-    would be a false audit result, and one marked "diverged" would send an investigator
-    after a defect that does not exist.
+    This is the clause of §9a that used to be false. The ladder lived in
+    `serving.decisioning`, above this layer in the import contract, so a degraded row was
+    the one category of decision nobody could later prove was made correctly — which is
+    exactly backwards, because an outage produces the largest single block of them and
+    that block is the one a regulator would ask about first.
+
+    Moving the ladder to `policy` closed it. The point of the parametrisation is that all
+    four rungs are covered by re-running the real ladder, not by a copy of it: a
+    reimplementation here would agree with itself and prove nothing.
     """
-    record, payload = _decide_and_record(engine, None, amount=249.99)
+    record, payload = _decide_and_record(engine, None, amount, days_since_first_seen)
     assert record.degraded
 
     result = replay_decision(record, payload)
 
-    assert result.replayed_action is None
-    assert not result.matched
-    assert "degraded" in str(result.unreplayable_reason)
+    assert result.replayed_action == expected
+    assert result.verified
+    assert result.unreplayable_reason is None
+    # Never `allow`, on any input — the invariant the whole fail-safe path exists for.
+    assert result.replayed_action != "allow"
+
+
+def test_a_degraded_replay_is_not_verified_on_a_different_input(engine: Engine) -> None:
+    """Same guard as the scored path: agreement on the wrong input is a coincidence.
+
+    The ladder has only two outcomes, so two unrelated transactions agree by chance about
+    half the time. Without the hash check a degraded replay would read as proof roughly
+    every other attempt.
+    """
+    record, payload = _decide_and_record(engine, None, amount=1500.0, days_since_first_seen=2.0)
+
+    result = replay_decision(record, {**payload, "amount": 1501.0})
+
+    assert result.replayed_action == "deny"  # the action still agrees
+    assert not result.input_matches
+    assert not result.verified  # but nothing has been verified
 
 
 def test_an_unknown_policy_version_is_refused(engine: Engine, scorer: CalibratedScorer) -> None:
