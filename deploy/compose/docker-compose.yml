@@ -1,0 +1,140 @@
+# The full stack. `postgres.yml` is included rather than merged into this file: it landed
+# with E5 and is the ledger's own definition, and rewriting it here would move the audit
+# trail's configuration away from the code that owns it.
+#
+# Two profiles, as design spec §10 requires:
+#
+#   core  — postgres + migrate + api. The smallest thing that can take a decision and
+#           record it. This is what the integration and degradation drills run against,
+#           and it is deliberately runnable on a laptop with 4 GB free.
+#   full  — adds mlflow, prometheus, grafana. Everything you need to watch it, and
+#           nothing that changes what it decides.
+#
+#   docker compose -f deploy/compose/docker-compose.yml --profile core up -d
+#
+# There is no autoscaler, no mesh and no second replica here. ADR-0002 rules all three out
+# by name: the interesting failure modes in this system are model-level, and a second
+# container demonstrates configuration rather than architecture.
+
+name: fraudlens
+
+include:
+  - postgres.yml
+
+services:
+  # One-shot. Applies the numbered migrations, then exits; the api waits on it completing
+  # rather than on postgres being healthy, because a healthy database with no tables is
+  # exactly the state in which the api comes up, fails every ledger write, and reports
+  # itself perfectly ready.
+  migrate:
+    profiles: ["core", "full"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/api.Dockerfile
+    image: fraudlens/api:dev
+    command:
+      - python
+      - -m
+      - fraudlens.streaming.migrate
+      - postgresql+psycopg://${POSTGRES_USER:-fraudlens}:${POSTGRES_PASSWORD:-fraudlens}@postgres:5432/${POSTGRES_DB:-fraudlens}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    profiles: ["core", "full"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/api.Dockerfile
+    image: fraudlens/api:dev
+    environment:
+      FRAUDLENS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-fraudlens}:${POSTGRES_PASSWORD:-fraudlens}@postgres:5432/${POSTGRES_DB:-fraudlens}
+      # The mounted-bundle path. If `bundles/` holds no `scorer.pkl` the loader raises
+      # ModelUnavailableError and the service comes up **not ready and serving fail-safe**
+      # — a real deployment state, and the one the degradation drill asserts on. It is
+      # deliberately not papered over with a default artifact: there is no such thing as a
+      # default fraud model, and a service that silently scored with one would be the most
+      # expensive bug this repository could ship.
+      FRAUDLENS_MODEL_BUNDLE: ${FRAUDLENS_MODEL_BUNDLE:-/models}
+      FRAUDLENS_MODEL_VERSION: ${FRAUDLENS_MODEL_VERSION:-}
+      TZ: UTC
+    volumes:
+      # Read-only. The scoring process has no reason to write to its own artifact, and a
+      # writable model directory is how a compromised worker persists across a restart.
+      - ${FRAUDLENS_BUNDLE_HOST_DIR:-./bundles}:/models:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Restarts on crash, and only on crash. The HEALTHCHECK in the Dockerfile is liveness,
+    # so a not-ready instance is left alone — see the comment there for why that is the
+    # single most important line in this file.
+    restart: unless-stopped
+    # Matches the k8s limits in deploy/k8s/api.yaml, so a number measured here transfers.
+    # Both are derived from the §4.3 budget rather than guessed; the derivation is in
+    # docs/operations/running-the-stack.md.
+    mem_limit: 768m
+    cpus: 1.0
+
+  mlflow:
+    profiles: ["full"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/mlflow.Dockerfile
+    image: fraudlens/mlflow:dev
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - mlflow-data:/mlflow
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:5000/health', timeout=2)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  prometheus:
+    profiles: ["full"]
+    image: prom/prometheus:v3.1.0@sha256:6559acbd5d770b15bb3c954629ce190ac3cbbdb2b7f1c30f0385c4e05104e218
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # 15 days. The label-maturity story needs 90, but retention here is not where that
+      # question is answered — matured-label metrics are computed against the ledger, which
+      # is the durable record. Prometheus holds the Tier 0/3 signals, whose useful window
+      # is an incident, not a quarter.
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  grafana:
+    profiles: ["full"]
+    image: grafana/grafana:11.5.0@sha256:0a2874cf39c6487093c682215f7c7903ed8646d78ae5f911af945d2dfcc0a447
+    volumes:
+      - ../grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      # Mount point is fixed by two files that already exist: the provider's
+      # `options.path` and grafana.ini's `default_home_dashboard_path`. Changing it here
+      # would make the landing page 404 and nothing would fail until someone opened it.
+      - ../grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  mlflow-data:
+  prometheus-data:
+  grafana-data:
