@@ -147,6 +147,12 @@ type = "layers"
 # the epics land; the constraint applies to whichever are present.
 layers = [
     "(fraudlens.serving)",
+    # The flywheel reads monitoring's drift signals to decide when to retrain and the
+    # registry to decide what to promote, so it sits above monitoring and below serving.
+    # The placement is the load-bearing part: a retraining decision must never be
+    # reachable from the request path, and putting it here makes that a build failure
+    # rather than a 3 a.m. discovery that a promotion ran inside a 150 ms budget.
+    "(fraudlens.flywheel)",
     # Monitoring and lineage read the ledger and the model registry; nothing on
     # the request path may read them. Placing them below serving and above
     # streaming states that: a drift computation can never end up inside the
