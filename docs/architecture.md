@@ -121,7 +121,7 @@ Never **allow**, on any input. The ladder lives in `policy.fallback`, not in
 `serving`, because the layer ordering has to allow `lineage.replay` to call it —
 an outage produces the largest block of unusual decisions, and that block is the
 one a regulator would ask about first. Moving the ladder to `policy` closed
-lineance gap 2 and made degraded decisions replayable.
+lineage gap 2 and made degraded decisions replayable.
 
 ---
 

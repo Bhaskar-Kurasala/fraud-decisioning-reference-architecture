@@ -10,6 +10,15 @@ real labels, annualised at 365/32.
 Model: HistGradientBoosting, 225 features, leak-free entity aggregates.
 **Out-of-time AUC 0.9045, PR-AUC 0.527.**
 
+> **These findings were productionised.** Four of them changed the shape of the
+> running system rather than staying as conclusions: §1 forced a three-action
+> policy, §2 keyed the promotion gate on expected cost instead of AUC, §5 is why
+> there is no review queue, and §6 split the retraining flywheel into label-free
+> triggers and maturity-gated promotion. See
+> [`docs/architecture.md`](docs/architecture.md) for how, and
+> [`docs/adr/`](docs/adr/README.md) for the decisions and their rejected
+> alternatives.
+
 ---
 
 ## 1. The intermediate actions are worth 3x the threshold tuning
