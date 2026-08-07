@@ -23,6 +23,26 @@ decision records.
 > 0.0021 lower — noise, by any review standard — costs $4.36M/yr** once its
 > scores are routed through an economic policy.
 
+```mermaid
+flowchart TD
+    TXN["Transaction"] --> FEAT["225 features<br/>(train window only)"]
+    FEAT --> GBDT["GBDT scorer · AUC 0.9045 OOT"]
+    GBDT --> RAW["Raw score"]
+    RAW --> CAL["Isotonic calibration<br/>(fitted on days 120–149)"]
+    CAL --> P["Calibrated P(fraud)"]
+    P --> COST["Per-txn cost model<br/>L · M · residual LTV"]
+    COST --> EV["Expected value per action"]
+    EV --> POL["Policy · argmax EV"]
+    POL --> A1["Allow"]
+    POL --> A2["Challenge"]
+    POL --> A3["Deny"]
+```
+
+> **At the calibration node** — skip this and it costs **$4.36M/yr** at a
+> noise-level AUC gap (§2). **At the policy node** — the three-action set is
+> worth **3× any threshold tuning** (§1). No review queue: §5 prices it at
+> negative value for this merchant.
+
 ![Calibration reliability curves and annual cost by policy](docs/images/headline.png)
 
 *Left: isotonic calibration on the out-of-time test window. The class-rebalanced

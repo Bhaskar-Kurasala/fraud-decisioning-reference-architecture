@@ -7,7 +7,7 @@ threshold. This document is the spine: it ties the findings to the code, names
 the decisions and the rejected alternatives, and is the one thing to read to
 understand the system end to end.
 
-**Date:** 2026-08-05 · **56 source files, 62 test files, 515 tests, 4 ADRs**
+**Date:** 2026-08-07 · **56 source files, 62 test files, 515 tests, 4 ADRs**
 
 ---
 
@@ -62,6 +62,34 @@ accidental:
   discovery that a promotion ran inside a 150 ms budget. The flywheel reads
   monitoring's drift signals to decide *when* to retrain and the registry to
   decide *what* to promote — both below it in the contract.
+
+The runtime topology — how the layers connect at run time, not what imports
+what:
+
+```mermaid
+flowchart TB
+    API["POST /v1/decide<br/>150 ms p99"] --> SCORER["CalibratedScorer"]
+    SCORER --> DECIDE["policy.decide"]
+    DECIDE --> LEDGER["Decision ledger<br/>(append-only, trigger-enforced)"]
+    SCORER -.->|"scorer down"| FALLBACK["fallback ladder<br/>(never allow)"]
+    FALLBACK --> LEDGER
+
+    CASE["GET /v1/cases/{id}<br/>investigation (off-path)"] --> LEDGER
+
+    LEDGER --> LABELS["Revealed labels<br/>(chargebacks, 34d median)"]
+    LABELS --> MATURITY["Label maturity gate"]
+    DRIFT["Drift (PSI)"] --> T0["Tier 0 trigger<br/>(label-free)"]
+    T0 --> RETRAIN["Retrain"] --> SHADOW["Shadow scoring"]
+    SHADOW --> GATE["Promotion gate<br/>(Tier 2, maturity-gated,<br/>confidence sequence)"]
+    MATURITY --> GATE
+    GATE -.->|"promote"| REGISTRY["Model registry"]
+    REGISTRY --> SCORER
+```
+
+Two things to read from this diagram. First, the only solid path into the
+ledger is `policy.decide` or `policy.fallback` — a shadow score never touches
+it. Second, the promotion gate has two inputs that arrive on very different
+schedules: drift (day 0) and maturity (day 90+). The gate waits for both.
 
 ---
 
