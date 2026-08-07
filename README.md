@@ -1,5 +1,8 @@
 # Fraud Decisioning: from research finding to running system
 
+[![CI](https://github.com/Bhaskar-Kurasala/fraud-decisioning-reference-architecture/actions/workflows/ci.yml/badge.svg)](https://github.com/Bhaskar-Kurasala/fraud-decisioning-reference-architecture/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Cost-sensitive fraud decisioning on real payment data (IEEE-CIS / Vesta), taken
 from analysis through to a deployable service.
 
@@ -19,6 +22,28 @@ decision records.
 > than any threshold tuning**, and a **class-rebalanced model whose AUC is
 > 0.0021 lower — noise, by any review standard — costs $4.36M/yr** once its
 > scores are routed through an economic policy.
+
+![Calibration reliability curves and annual cost by policy](docs/images/headline.png)
+
+*Left: isotonic calibration on the out-of-time test window. The class-rebalanced
+model (triangles) is better-ranked by AUC yet miscalibrated — it is the curve
+furthest from the diagonal, and routing it through an economic policy costs
+$4.36M/yr. Right: annual fraud cost under five action sets. The four-action EV
+argmax (P4) cuts the approve-everything baseline by 47%.*
+
+### Results at a glance
+
+| Policy | Description | Annual cost | Δ vs P0 |
+|---|---|---|---|
+| P0 | Approve everything | $5.25M | — |
+| P1 | Binary, global threshold (0.6981) | $4.47M | −15% |
+| P3 | Binary, per-transaction EV threshold | $4.34M | −17% |
+| **P4** | **Four-action EV argmax (allow / challenge / deny)** | **$2.80M** | **−47%** |
+
+The 3× headline: the challenge arm alone recovers ~68% of the gain from P4 at
+near-zero marginal cost. The calibration headline: the model with the better AUC
+(AUC −0.0021, noise by any review standard) costs $4.36M/yr once its scores meet
+a decision boundary.
 
 ---
 

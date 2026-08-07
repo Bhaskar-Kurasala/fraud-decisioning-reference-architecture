@@ -21,4 +21,7 @@ for s in 01_profile 02_features 03_model 03b_calibrate 04b_ltv 05_economics 06_f
   python3 "research/$s.py" 2>&1 | tee "outputs/$s.log"
 done
 
+echo "=== figures"
+python3 "research/figures.py" 2>&1 | tee "outputs/figures.log"
+
 echo "done -- see outputs/*.log"
