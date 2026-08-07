@@ -1,18 +1,43 @@
-# Fraud Decisioning: model → calibration → economics → policy
+# Fraud Decisioning: from research finding to running system
 
-An end-to-end reproduction of cost-sensitive fraud decisioning on real payment
-data. The point is not the model. The point is what happens to the model's
-score after it is produced: calibration, per-transaction expected value,
-capacity constraints, and the policy layer that turns a probability into an
-action.
+Cost-sensitive fraud decisioning on real payment data (IEEE-CIS / Vesta), taken
+from analysis through to a deployable service.
 
-Headline result: on this data the **choice of action set is worth 3x more than
-any threshold tuning**, and an **uncalibrated-but-equally-accurate score costs
-$6.6M/yr** while showing an identical AUC.
+The project has two halves, and the second exists because of what the first
+found:
 
-See `fraud-decisioning-findings.md` for the full write-up.
+**Part 1 — the research.** What the data actually says when you stop optimising
+AUC and start optimising money. Seven stages, every number regenerable by one
+command.
+
+**Part 2 — the system.** The production layer built from those findings — a
+scoring service, an append-only decision ledger, a maturity-gated retraining
+flywheel, and an investigation API. 56 modules, 515 tests, 4 architecture
+decision records.
+
+> **Headline result.** On this data the **choice of action set is worth 3× more
+> than any threshold tuning**, and a **class-rebalanced model whose AUC is
+> 0.0021 lower — noise, by any review standard — costs $4.36M/yr** once its
+> scores are routed through an economic policy.
 
 ---
+
+## Navigation
+
+| I want to… | Read |
+|---|---|
+| understand what the data said | [`fraud-decisioning-findings.md`](fraud-decisioning-findings.md) |
+| understand how the system is built | [`docs/architecture.md`](docs/architecture.md) |
+| see the decisions and their rejected alternatives | [`docs/adr/`](docs/adr/README.md) |
+| run the stack | [`docs/operations/running-the-stack.md`](docs/operations/running-the-stack.md) |
+| respond to an alert | [`docs/runbooks/`](docs/runbooks/) |
+| integrate a case-management tool | [`docs/analyst-integration.md`](docs/analyst-integration.md) |
+| know what an auditor can and cannot be told | [`docs/lineage.md`](docs/lineage.md) |
+| reproduce the research | [`research/`](research/) + `./run_all.sh` |
+
+---
+
+# Part 1 — The research
 
 ## Quick start
 
@@ -22,41 +47,14 @@ pip install -r requirements.txt
 ./run_all.sh
 ```
 
-`run_all.sh` downloads the data (~680MB), verifies checksums, and runs all
-seven stages, logging each to `outputs/`. Roughly 15 minutes on 1 core / 3GB.
+`run_all.sh` downloads the data (~680MB), verifies checksums, and runs all seven
+stages, logging each to `outputs/`. Roughly 15 minutes on 1 core / 3GB.
 
-To change the business assumptions, edit `config.py` and rerun stages 5–6 only:
+To change the business assumptions, edit `config.py` and rerun stages 5–6 only.
 
-```bash
-python3 05_economics.py && python3 06_full.py
-```
+## Stages
 
----
-
-## Data
-
-**IEEE-CIS Fraud Detection** — real Vesta Corporation e-commerce transactions.
-
-| | |
-|---|---|
-| Source | `huggingface.co/datasets/aliceczr/ieee-fraud-detection` |
-| Original | Kaggle `ieee-fraud-detection` (requires competition acceptance) |
-| Files | `train_transaction.csv` (683MB), `train_identity.csv` (26MB) |
-| MD5 | `58b4038d8715f5e11007b826bef00ce7`, `8487db5001c8bad139f3318d5d3db416` |
-| Rows | 590,540 transactions over 182 days |
-| Labels | 20,663 fraud (3.50%) |
-| GMV | $79,738,949 |
-
-Chosen over the more common ULB credit-card dataset because the economics need
-real transaction amounts, a long time axis, and entity identifiers. ULB has
-PCA-anonymised features and two days of history — you cannot build a business
-layer on it.
-
----
-
-## Pipeline
-
-| Stage | Script | Produces | Runtime |
+| | Script | Produces | Time |
 |---|---|---|---|
 | 1 | `01_profile.py` | base rates, amount distribution, temporal drift, segments | ~1 min |
 | 2 | `02_features.py` | `X.parquet`, `meta.parquet`, `feats.json` — 225 features, out-of-time split | ~4 min |
@@ -68,7 +66,11 @@ layer on it.
 
 Stages 5 and 6 are the analysis; 1–4 exist to feed them.
 
-### Split
+`research/architect-blueprint-notes.md` is the thinking that preceded the code —
+the model-portfolio and economics reasoning used to decide what was worth
+building. Notes, not a deliverable.
+
+## Split
 
 Strictly out-of-time. Day index = `(TransactionDT − min) // 86400`.
 
@@ -78,10 +80,10 @@ calib  day 120–149    83,571 txns   3.41% fraud   <- isotonic fitted here only
 test   day 150–181    92,427 txns   3.48% fraud   <- every reported number
 ```
 
-The calibration slice is separate from test. Fitting isotonic on test would
-make the calibration results meaningless.
+The calibration slice is separate from test. Fitting isotonic on test would make
+the calibration results meaningless.
 
-### Leakage controls
+## Leakage controls
 
 - Frequency encodings and entity amount-aggregates fitted on the **train window
   only**, then mapped forward. Unseen levels → 0 / NaN.
@@ -90,41 +92,17 @@ make the calibration results meaningless.
 - Customer proxy `uid = card1_card2_addr1_(D1−day)` is the standard IEEE-CIS
   construction: same physical card + address + first-seen date.
 
-Out-of-time **AUC 0.9045, PR-AUC 0.527**. This is deliberately lower than the
-~0.94 on the Kaggle leaderboard, where entity aggregates are computed over the
-combined train+test set. That leaks future information and is not available at
-decision time.
-
----
-
-## Reproducibility
-
-**Determinism.** Seeds in `config.py`: `SEED=42` (model), `SEED_LABEL_SIM=7`
-(chargeback-lag simulation). HistGradientBoosting with a fixed `random_state`
-is deterministic for a given thread count; results were validated single-core.
-Multi-core runs may differ in the last decimal of AUC via floating-point
-reduction order. All economics downstream of the saved `.npy` scores are
-exactly deterministic.
-
-**Constants.** Every business assumption lives in `config.py` and nowhere else.
-No script hardcodes a cost. If a number appears in the report it traces to
-`config.py` or to the data.
-
-**Environment.** `requirements.txt` is pinned; `ENVIRONMENT.txt` records the
-validated platform (Python 3.12.3, x86_64, scikit-learn 1.8.0).
-
-**Validation.** Refactoring stages 2–6 to read from `config.py` reproduced every
-figure bit-identically ($2,799,797 P4 annual cost, $6,624,870 miscalibration
-penalty, 0.328–0.789 boundary spread).
-
----
+Out-of-time **AUC 0.9045, PR-AUC 0.527**. Deliberately lower than the ~0.94 on
+the Kaggle leaderboard, where entity aggregates are computed over the combined
+train+test set. That leaks future information and is not available at decision
+time.
 
 ## Business layer
 
 Costs are per transaction, not global:
 
 ```
-L_i = Amount_i × COGS + CB_FEE + OPS_DISPUTE          # false negative
+L_i = Amount_i × COGS + CB_FEE + OPS_DISPUTE           # false negative
 M_i = Amount_i × MARGIN + relationship_cost(tenure_i)  # false positive
 ```
 
@@ -137,47 +115,142 @@ transactions inflated new-customer LTV from $323 to $1,999. The fix measures
 and takes `LTV = P(repeat) × value_if_repeat × discount`.
 
 **`P(churn|declined)` is the one input with no data support here.** It is
-tenure-graded from published false-decline research. It is the softest number
-in the model and the first thing to challenge.
+tenure-graded from published false-decline research. It is the softest number in
+the model and the first thing to challenge.
 
----
+## Reproducibility
+
+**Determinism.** Seeds in `config.py`: `SEED=42` (model), `SEED_LABEL_SIM=7`
+(chargeback-lag simulation). HistGradientBoosting with a fixed `random_state` is
+deterministic for a given thread count; results validated single-core. All
+economics downstream of the saved `.npy` scores are exactly deterministic.
+
+**Constants.** Every business assumption lives in `config.py` and nowhere else.
+No script hardcodes a cost. If a number appears in the report it traces to
+`config.py` or to the data.
+
+**Validation.** Refactoring stages 2–6 to read from `config.py` reproduced every
+figure bit-identically ($2,799,797 P4 annual cost, 0.328–0.789 boundary spread).
 
 ## Known limitations
 
 1. **No exploration holdout.** This data contains only transactions the original
    issuer approved and observed. Selection bias from their declines is
-   uncorrected and, with this dataset, unmeasurable. A real deployment needs a
-   stratified holdout to estimate the counterfactual.
+   uncorrected and, with this dataset, unmeasurable.
 2. **Challenge and review outcomes are counterfactual.** Realised P&L uses true
    labels for the loss and expected values for the intervention. `F_PASS`,
-   `A_ABANDON` and `Q_ANALYST` are vendor/ops parameters, not fitted — hence
-   the sensitivity grid in stage 6.
+   `A_ABANDON` and `Q_ANALYST` are vendor/ops parameters, not fitted — hence the
+   sensitivity grid in stage 6.
 3. **`P(churn|declined)` is assumed** (see above).
 4. **Label latency is simulated, not observed.** IEEE-CIS labels are final. The
    stage-6 experiment injects a lognormal chargeback lag to demonstrate the
    failure mode; it does not measure it in this data.
-5. **The class-rebalanced comparison is analytic by default.** Training at a
-   50/50 effective prior multiplies the odds by `(1−π)/π`; this closed form is
-   exactly what an uncorrected `class_weight='balanced'` fit produces, and it is
-   exactly reproducible. To refit empirically instead:
-   `FIT_BALANCED=1 python3 03_model.py` — needs ~6GB, OOMs on 3GB.
-6. **Single merchant, single 182-day window, one adversary regime.** The
+5. **Single merchant, single 182-day window, one adversary regime.** The
    direction of the findings should generalise; the magnitudes should not be
    transplanted.
-7. **No fairness or disparate-impact analysis.** IEEE-CIS carries no protected
+6. **No fairness or disparate-impact analysis.** IEEE-CIS carries no protected
    attributes. For that dimension use the Bank Account Fraud (NeurIPS 2022)
    dataset, which ships protected attributes deliberately.
+
+---
+
+# Part 2 — The system
+
+Full design: [`docs/architecture.md`](docs/architecture.md).
+
+## What the findings forced
+
+| Finding | The architectural consequence |
+|---|---|
+| §1 — the challenge arm is worth 3× threshold tuning | A three-action policy (`allow` / `challenge` / `deny`), not a binary classifier. `INCLUDE_REVIEW` has no default, so the choice cannot be made by omission. |
+| §2 — miscalibration costs $4.36M/yr at a noise-level AUC gap | The promotion gate is keyed on **expected cost**, never on AUC. A challenger that improves AUC and worsens ECE is rejected. |
+| §5 — review is positive on 5 of 92,427 transactions | **No review queue.** The humans in this system are dispute handlers and adverse-action responders; they get an investigation API. ([ADR-0004](docs/adr/0004-no-analyst-review-queue.md)) |
+| §6 — observed fraud collapses to 6.9% of true on recent windows | Retraining triggers on **label-free Tier 0 signals**; promotion waits for **maturity-gated Tier 2** metrics. A performance-keyed trigger would fire a quarter late. |
+
+## Layout
+
+```
+src/fraudlens/
+  serving/      request path — scoring, decisioning, case API, case view
+  flywheel/     retrain trigger, shadow scoring, promotion gate, rollback
+  monitoring/   drift, label maturity, the five metric tiers
+  lineage/      decision replay, model card
+  streaming/    append-only ledger, delayed labels, label provenance
+  policy/       the decision boundary and the fail-safe rule ladder
+  economics/    the cost model: L, M, relationship_cost, label value
+  models/       scorer, calibration, registry, promotion gate, checks
+  features/     tenure buckets, amount bands
+  config/       business constants
+```
+
+Dependencies flow strictly downward and the ordering is enforced at build time
+by `import-linter`. Two placements are load-bearing:
+
+- **economics sits below policy** — the cost model is testable without importing
+  the rule that consumes it.
+- **flywheel sits below serving** — a retraining decision is structurally
+  unreachable from the request path, so it cannot end up inside a 150 ms budget.
+
+## Running it
+
+```bash
+uv sync --all-extras
+uv run pytest -m "not integration"       # 515 tests, no Docker needed
+
+# The smallest runnable stack: API + Postgres + migrations
+docker compose -f deploy/compose/docker-compose.yml --profile core up -d --wait
+
+# Everything: adds MLflow, Prometheus, Grafana
+docker compose -f deploy/compose/docker-compose.yml --profile full up -d --wait
+```
+
+See [`docs/operations/running-the-stack.md`](docs/operations/running-the-stack.md)
+for profiles, health endpoints, and what to do when it will not come up.
+
+## Endpoints
+
+| | What it does | Latency budget |
+|---|---|---|
+| `POST /v1/decide` | Score → calibrate → policy → ledger | **150 ms p99** (§4.3) |
+| `GET /v1/cases/{id}` | The full investigation view of one recorded decision | none — off the checkout path |
+| `GET /cases/{id}` | The same, rendered as a page for a dispute desk | none |
+| `GET /metrics` | Prometheus exposition | — |
+| `GET /health/live`, `/health/ready` | Liveness and readiness | — |
+
+## What this system deliberately does not do
+
+Each refusal is measured, not accidental:
+
+- **No review queue** — §5 prices it at $14,783/yr worse than having none.
+- **No per-feature attribution** — no champion artifact exists, and the ledger
+  stores `input_hash` rather than feature values. A fabricated explanation on an
+  adverse-action notice is a compliance problem, not a quality one.
+- **No performance-based retrain trigger** — it would fire a quarter after the
+  traffic that broke the model.
+- **No speculative extension points** — no interface with zero implementations.
+
+## Quality gates
+
+```bash
+uv run ruff check src tests      # lint
+uv run mypy                      # strict type checking
+uv run lint-imports              # layered architecture contract
+uv run pytest -m "not integration"
+```
+
+All four run in CI on every push (`.github/workflows/ci.yml`).
 
 ---
 
 ## Files
 
 ```
-config.py               all constants, paths, seeds
-requirements.txt        pinned dependencies
-ENVIRONMENT.txt         validated platform
-00_download_data.sh     data acquisition + checksum verification
-run_all.sh              full pipeline
-01..06_*.py             stages
+config.py                       research constants, paths, seeds
+run_all.sh                      full research pipeline
+research/                       the seven analysis stages + architect notes
 fraud-decisioning-findings.md   the write-up
+src/fraudlens/                  the production system
+tests/                          515 tests
+deploy/                         compose stack + k8s manifests
+docs/                           architecture, ADRs, runbooks, operations
 ```
